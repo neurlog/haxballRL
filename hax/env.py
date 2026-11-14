@@ -26,6 +26,9 @@ HaxballGym (`haxball_core`) gives us the real engine: physics, kickoff barriers,
       Kicking the ball into a wall and having it bounce back sums to about zero, so
       pinning the ball in a corner and spamming kick earns nothing
       (tests/test_rewards.py checks this),
+  * kickoff dawdling: once your own kickoff has waited `kickoff_grace_s` (5 s), the kicking
+    team loses `kickoff_penalty` per decision until the ball moves (the clock is stopped
+    during kickoffs, so without this waiting is free and agents learn to stall),
     - ball velocity towards the goal you attack (VelocityBallToGoalReward).
 
 Actions are one of 18 joint actions: 9 move directions x kick on/off.
@@ -81,6 +84,8 @@ class HaxEnv:
         kickoff_timeout_s: float = 10.0,
         goal_reward: float = 1.0,
         win_reward: float = 3.0,
+        kickoff_penalty: float = 0.0,
+        kickoff_grace_s: float = 5.0,
     ):
         self.n, self.ts = n_envs, team_size
         self.P = 2 * team_size
@@ -99,6 +104,8 @@ class HaxEnv:
         self.ko_timeout = int(kickoff_timeout_s * TICKS_PER_S) if kickoff_timeout_s > 0 else 1 << 62
         self.goal_reward = goal_reward
         self.win_reward = win_reward
+        self.ko_penalty = kickoff_penalty / frame_skip  # per tick, so `kickoff_penalty` per decision
+        self.ko_grace = int(kickoff_grace_s * TICKS_PER_S)
         self.w_speed = self.w_touch = self.w_btg = 0.0
 
         self.team = self.engine._teams.copy()  # (N, P)
@@ -213,6 +220,13 @@ class HaxEnv:
             self.state = st = self.engine.snapshot()
             # clock: stopped during the celebration and while a kickoff waits for its touch
             self.ko_wait = np.where(waiting, self.ko_wait + 1, 0)
+            if self.ko_penalty:
+                # dawdling penalty: once your own kickoff has waited `kickoff_grace_s`, every
+                # player of the kicking team loses `kickoff_penalty` per decision until the ball moves
+                late = waiting & (self.ko_wait > self.ko_grace) & ~done
+                if late.any():
+                    rew -= np.where(late[:, None] & (self.team == self.kicking[:, None]), self.ko_penalty, 0.0
+                                    ).astype(np.float32)
             running = (self.celeb == 0) & ~waiting
             self.play_ticks += running & ~done
             self.celeb = np.maximum(self.celeb - 1, 0)

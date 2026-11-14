@@ -92,6 +92,47 @@ def test_full_game_of_chasing_is_worth_less_than_a_win():
     assert 0.0005 * 180 * 30 < 4.0
 
 
+def _kickoff_env(penalty=0.002, grace=5.0):
+    env = HaxEnv(1, team_size=1, ping_ms=0.0, jitter_ms=0.0, kickoff_timeout_s=0.0, goal_reward=0.0,
+                 win_reward=0.0, kickoff_penalty=penalty, kickoff_grace_s=grace)
+    env.reset()  # fresh game: red kicks off
+    return env
+
+
+def _run(env, decisions, red_keys):
+    red = blue = 0.0
+    for t in range(decisions):
+        _, r, _, _ = env.step(np.array([[keys_to_action(*red_keys(t)), 0]]))
+        red, blue = red + float(r[0, 0]), blue + float(r[0, 1])
+    return red, blue
+
+
+def test_kickoff_penalty_only_after_grace():
+    red, blue = _run(_kickoff_env(), int(4.9 * 30), lambda t: (0, 0, False))
+    print(f"  red waits 4.9 s at its kickoff: red {red:+.3f}, blue {blue:+.3f}")
+    assert red == 0.0 and blue == 0.0, "no penalty inside the 5 s grace period"
+    red, blue = _run(_kickoff_env(), 10 * 30, lambda t: (0, 0, False))
+    print(f"  red waits 10 s at its kickoff:  red {red:+.3f}, blue {blue:+.3f}  (expected -0.300)")
+    assert abs(red - (-0.002 * 5 * 30)) < 0.01, "5 s past the grace period should cost 150 decisions x 0.002"
+    assert blue == 0.0, "the defending team is never penalised"
+
+
+def test_kickoff_penalty_stops_once_taken():
+    env = _kickoff_env()
+    red, _ = _run(env, 6 * 30, lambda t: (0, 0, False))  # dawdle 6 s (1 s past the grace period)
+    t = 0
+    while env.kickoff_waiting()[0]:  # then walk into the ball (about 3 s from spawn)
+        r, _ = _run(env, 1, lambda _: (1, 0, True))
+        red += r
+        t += 1
+        assert t < 300, "red never reached the ball"
+    expected = -0.002 * (6 * 30 + t - 5 * 30)
+    after, _ = _run(env, 30, lambda _: (0, 0, False))  # ball in play: no more penalty
+    print(f"  red waits 6 s, walks {t / 30:.1f} s to take it: red {red:+.3f} (expected {expected:+.3f}), "
+          f"next 1 s {after:+.3f}")
+    assert abs(red - expected) < 0.01 and after == 0.0
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

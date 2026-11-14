@@ -99,6 +99,8 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     a("--btg-early", type=float, default=0.01, help="ball velocity towards the goal you attack")
     a("--btg-late", type=float, default=0.005)
     a("--reward-stage-games", type=float, default=3000)
+    a("--kickoff-penalty", type=float, default=0.002, help="per decision while your own kickoff waits past the grace time")
+    a("--kickoff-grace", type=float, default=5.0, help="seconds of free waiting at your own kickoff")
     # ppo
     a("--n-envs", type=int, default=192)
     a("--rollout", type=int, default=192, help="decisions per env per update (~50k samples, as RLGym-PPO)")
@@ -165,7 +167,8 @@ def main(argv=None, defaults=None, mode_dir="."):
     env = HaxEnv(N, team_size=ts, stadium=args.stadium, seed=args.seed, ping_ms=args.ping_ms,
                  jitter_ms=args.jitter_ms, frame_skip=args.frame_skip, time_limit_s=args.time_limit,
                  overtime_limit_s=args.overtime_limit, kickoff_timeout_s=args.kickoff_timeout,
-                 goal_reward=args.goal_reward, win_reward=args.win_reward)
+                 goal_reward=args.goal_reward, win_reward=args.win_reward,
+                 kickoff_penalty=args.kickoff_penalty, kickoff_grace_s=args.kickoff_grace)
     P, D = env.P, env.obs_dim
     nm, no = env.n_mates, env.n_opps
     mkw = dict(self_dim=SELF_DIM, ent_dim=ENT_DIM, n_actions=N_ACTIONS, hidden=args.hidden, ent_hidden=args.ent_hidden)
