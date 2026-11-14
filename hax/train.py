@@ -401,8 +401,7 @@ def main(argv=None, defaults=None, mode_dir="."):
                           f"| league now {len(league.members)} members")
                 else:
                     print(f"--- promotion check at {games} games: {wc:.0%} vs champion gen {league.champion_gen} over "
-                          f"{len(champ_results)} games (need {args.promote_threshold:.0%} over "
-                          f"{args.promote_min_games}+), league avg {'n/a' if la is None else f'{la:.2f}'} "
+                          f"{len(champ_results)} games, league avg {'n/a' if la is None else f'{la:.2f}'} "
                           f"| hardest: {league.summary()}")
                 league.save()
             if games // args.snapshot_every_games > last_snap:
