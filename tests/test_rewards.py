@@ -1,0 +1,105 @@
+"""Reward-hacking checks for the dense rewards in hax/env.py.
+
+    python tests/test_rewards.py        (or: pytest tests/)
+
+The touch reward was once farmed by pinning the ball in a corner and spamming kick: every
+kick bounced the ball off the wall back into the player. These tests replay that exploit
+in all four corners and check it now earns about nothing, while a real shot still pays.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from hax.env import HaxEnv, keys_to_action  # noqa: E402
+
+SECONDS = 10
+DECISIONS = SECONDS * 30
+
+
+def make_env(touch=1.0, speed=0.0, btg=0.0):
+    env = HaxEnv(1, team_size=1, ping_ms=0.0, jitter_ms=0.0, kickoff_timeout_s=0.0, goal_reward=0.0, win_reward=0.0)
+    env.set_reward_weights(speed=speed, touch=touch, ball_to_goal=btg)
+    return env
+
+
+def place(env, ball, red, blue=(0.0, 150.0)):
+    env.engine.set_state(np.array([ball], float), np.zeros((1, 2)), np.array([[red, blue]], float),
+                         np.zeros((1, 2, 2)))
+    env.state = env.engine.snapshot()
+
+
+def play(env, red_keys, decisions=DECISIONS):
+    """red_keys(t) -> (dx, dy, kick) in WORLD coordinates (red's frame = world frame).
+    Returns (total red reward, number of kicks that connected)."""
+    total, kicks = 0.0, 0
+    prev_speed = np.linalg.norm(env.state.ball_vel[0])
+    for t in range(decisions):
+        dx, dy, k = red_keys(t)
+        a = np.array([[keys_to_action(dx, dy, k), 0]])
+        _, r, _, _ = env.step(a)
+        total += float(r[0, 0])
+        speed = np.linalg.norm(env.state.ball_vel[0])
+        kicks += speed > prev_speed + 2.0
+        prev_speed = speed
+    return total, kicks
+
+
+CORNERS = {  # ball spot, player spot, direction pushing into the corner (y is DOWN in HaxBall)
+    "top-right (attacking corner)": ((356, -156), (330, -130), (1, -1)),
+    "bottom-right (attacking corner)": ((356, 156), (330, 130), (1, 1)),
+    "top-left (own corner)": ((-356, -156), (-330, -130), (-1, -1)),
+    "bottom-left (own corner)": ((-356, 156), (-330, 130), (-1, 1)),
+}
+
+
+def test_corner_kick_spam_earns_nothing():
+    for name, (ball, red, (dx, dy)) in CORNERS.items():
+        env = make_env(touch=1.0)
+        place(env, ball, red)
+        total, kicks = play(env, lambda t, dx=dx, dy=dy: (dx, dy, t % 2 == 0))  # tap kick every other decision
+        print(f"  corner spam, {name:32s}: {kicks:3d} kicks in {SECONDS}s -> touch reward {total:+.2f}")
+        assert kicks >= 20, f"{name}: the exploit didn't actually kick ({kicks} kicks); test setup is wrong"
+        # must not pay: the old touch reward earned about +1 per kick here (34 per 10 s at weight 1).
+        # Negative is fine - kicking the ball into a wall loses goal-ward speed on the rebound.
+        assert total < 1.0, f"{name}: corner kick-spam earned {total:+.2f} touch reward in {SECONDS}s"
+
+
+def test_shot_at_goal_pays():
+    env = make_env(touch=1.0)
+    place(env, (250, 0), (222, 0))
+    total, kicks = play(env, lambda t: (1, 0, t < 3), decisions=30)
+    print(f"  one shot straight at goal: {kicks} kick(s) -> touch reward {total:+.2f}")
+    assert kicks >= 1 and total > 0.5
+
+
+def test_shot_at_own_goal_costs():
+    env = make_env(touch=1.0)
+    place(env, (-250, 0), (-222, 0))
+    total, kicks = play(env, lambda t: (-1, 0, t < 3), decisions=30)
+    print(f"  one shot at own goal:      {kicks} kick(s) -> touch reward {total:+.2f}")
+    assert kicks >= 1 and total < -0.5
+
+
+def test_full_game_of_chasing_is_worth_less_than_a_win():
+    # late-stage weights: speed 0.0005 per decision at most; a whole 3-minute game of
+    # perfect chasing (5400 decisions) must be worth less than one goal + the win bonus (4)
+    assert 0.0005 * 180 * 30 < 4.0
+
+
+if __name__ == "__main__":
+    fails = 0
+    for name, fn in list(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            try:
+                fn()
+                print(f"PASS {name}")
+            except AssertionError as e:
+                fails += 1
+                print(f"FAIL {name}: {e}")
+    sys.exit(1 if fails else 0)

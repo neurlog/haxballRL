@@ -93,11 +93,11 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     # guide's stages: first learn to reach and touch the ball, then shift to moving it to goal.
     # Nothing is removed completely. Set all to 0 for goals + wins only.
     a("--speed-early", type=float, default=0.02, help="speed towards the ball (clipped at 0)")
-    a("--speed-late", type=float, default=0.002)
-    a("--touch-early", type=float, default=0.2, help="touch, scaled by how hard the ball was hit")
-    a("--touch-late", type=float, default=0.01)
+    a("--speed-late", type=float, default=0.0005)
+    a("--touch-early", type=float, default=0.2, help="touch: change in ball velocity towards the goal (signed)")
+    a("--touch-late", type=float, default=0.005)
     a("--btg-early", type=float, default=0.01, help="ball velocity towards the goal you attack")
-    a("--btg-late", type=float, default=0.01)
+    a("--btg-late", type=float, default=0.005)
     a("--reward-stage-games", type=float, default=3000)
     # ppo
     a("--n-envs", type=int, default=192)

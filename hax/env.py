@@ -21,8 +21,11 @@ HaxballGym (`haxball_core`) gives us the real engine: physics, kickoff barriers,
     the winning/losing team when the game ends (0 for a draw);
   * dense, per decision, weights set by `set_reward_weights(speed, touch, ball_to_goal)`:
     - speed towards the ball, clipped at 0 (RLGym guide's SpeedTowardBallReward),
-    - touch, scaled by how much the touch changed the ball's velocity (a full kick = 1),
-      so pushing the ball along can't be farmed for full touch rewards,
+    - touch: the change in the ball's velocity TOWARDS THE GOAL YOU ATTACK while you are
+      touching it, signed (a full kick straight at goal = +1, one straight away = -1).
+      Kicking the ball into a wall and having it bounce back sums to about zero, so
+      pinning the ball in a corner and spamming kick earns nothing
+      (tests/test_rewards.py checks this),
     - ball velocity towards the goal you attack (VelocityBallToGoalReward).
 
 Actions are one of 18 joint actions: 9 move directions x kick on/off.
@@ -227,14 +230,17 @@ class HaxEnv:
                 self.kicking[g] = conc[g]
                 # golden goal: a goal in overtime ends the game straight away
                 ended_goal |= g & (self.play_ticks >= self.time_limit)
+            dist0 = np.linalg.norm(st0.ball_pos[:, None] - st0.player_pos, axis=-1)
             dist = np.linalg.norm(st.ball_pos[:, None] - st.player_pos, axis=-1)
             self.touches += dist < 26.5
             if self.w_touch:
                 # velocity change the ball got this tick beyond its normal damping (0.99/tick),
-                # credited to the players touching it; a full-strength kick (+5) = 1
-                dv = np.linalg.norm(st.ball_vel - 0.99 * st0.ball_vel, axis=-1)
-                live = (self.celeb == 0) & ~stalled & ~g & (dv > 0.05)
-                touch += np.where(live[:, None] & (dist < 30.0), np.minimum(dv / 5.0, 1.0)[:, None], 0.0)
+                # projected on the direction to the goal each player attacks, credited WITH SIGN
+                # to the players in contact (before or after the tick). Kick + wall rebound ~ 0.
+                dv = st.ball_vel - 0.99 * st0.ball_vel  # (N,2)
+                gain = (self._goal_dir(st0.ball_pos) * dv[:, None]).sum(-1) / 5.0  # (N,P)
+                contact = (np.minimum(dist0, dist) < 30.0) & ((self.celeb == 0) & ~stalled & ~g)[:, None]
+                touch += np.where(contact, gain, 0.0)
             done |= ended_goal
             over = self.play_ticks >= self.time_limit
             level = self.score[:, 0] == self.score[:, 1]
@@ -245,7 +251,7 @@ class HaxEnv:
         if self.w_speed or self.w_btg:
             rew += self._dense(self.state)
         if self.w_touch:
-            rew += (self.w_touch * np.minimum(touch, 1.0)).astype(np.float32)
+            rew += (self.w_touch * np.clip(touch, -1.0, 1.0)).astype(np.float32)
 
         finished = []
         if done.any():
@@ -271,12 +277,16 @@ class HaxEnv:
         pb = st.ball_pos[:, None] - st.player_pos
         pbn = pb / np.maximum(np.linalg.norm(pb, axis=-1, keepdims=True), 1e-9)
         speed = np.clip((pbn * st.player_vel).sum(-1) / PLAYER_TOP_SPEED, 0.0, 1.0)
-        tgt = np.stack([self.sx * self.goal_x, np.clip(st.ball_pos[:, None, 1], -self.goal_y, self.goal_y)
-                        * np.ones_like(self.sx)], -1)
-        bg = tgt - st.ball_pos[:, None]
-        bgn = bg / np.maximum(np.linalg.norm(bg, axis=-1, keepdims=True), 1e-9)
-        btg = np.clip((bgn * st.ball_vel[:, None]).sum(-1) / BALL_SPEED_REF, -1.0, 1.0)
+        btg = np.clip((self._goal_dir(st.ball_pos) * st.ball_vel[:, None]).sum(-1) / BALL_SPEED_REF, -1.0, 1.0)
         return np.where(live, self.w_speed * speed + self.w_btg * btg, 0.0).astype(np.float32)
+
+    def _goal_dir(self, ball_pos: np.ndarray) -> np.ndarray:
+        """(N,2) ball positions -> (N,P,2) unit vectors from the ball to the nearest point of
+        the goal mouth each player attacks."""
+        tgt = np.stack([self.sx * self.goal_x, np.clip(ball_pos[:, None, 1], -self.goal_y, self.goal_y)
+                        * np.ones_like(self.sx)], -1)
+        bg = tgt - ball_pos[:, None]
+        return bg / np.maximum(np.linalg.norm(bg, axis=-1, keepdims=True), 1e-9)
 
     # ------------------------------------------------------------------ obs
     def observe(self) -> np.ndarray:
