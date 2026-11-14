@@ -1,0 +1,5 @@
+haxballgym==1.0.1
+haxball-core==1.0.0
+numpy>=1.23
+torch>=2.0
+pygame>=2.5

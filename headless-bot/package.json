@@ -1,0 +1,10 @@
+{
+  "name": "haxballrl-headless-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Host a private HaxBall room where a trained haxballrl policy plays.",
+  "main": "bot.js",
+  "dependencies": {
+    "node-haxball": "^2.3.0"
+  }
+}
