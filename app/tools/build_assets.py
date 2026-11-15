@@ -3,7 +3,8 @@
     python app/tools/build_assets.py
 
 * app/policies/<mode>.json  - the bot network weights + the mode's game settings (from export_policy)
-* app/assets/replay.json    - ~40 s of the 3v3 champion playing itself, drawn behind the app header
+* app/assets/header.svg     - the app's animated header (same clip as the README banner)
+* .github/header.svg        - the README banner: logo + title over a kickoff-to-kickoff 3v3 bot match
 * app/assets/icon.png       - the logo: a red HaxBall-style player with "RL", transparent background
 """
 
@@ -49,23 +50,6 @@ def build_policies():
         print("policy", key, "->", m["ckpt"])
     with open(os.path.join(APP, "policies", "index.json"), "w") as f:
         json.dump(index, f, indent=1)
-
-
-def build_replay(seconds=40, skip_s=20):
-    net = load_policy(os.path.join(ROOT, MODES["3v3-big"]["ckpt"]))
-    env = HaxEnv(1, team_size=3, stadium="big", seed=7)
-    obs = env.observe()
-    frames = []
-    while len(frames) < seconds * 30:
-        a = net.act(torch.from_numpy(obs.reshape(-1, env.obs_dim)), env.n_mates, env.n_opps)[0].numpy()
-        obs, _, _, _ = env.step(a.reshape(1, -1))
-        if env.play_ticks[0] < skip_s * 60:
-            continue
-        st = env.state
-        frames.append([round(float(v), 1) for v in np.concatenate([st.ball_pos[0], st.player_pos[0].ravel()])])
-    with open(os.path.join(APP, "assets", "replay.json"), "w") as f:
-        json.dump(dict(stadium="big", team_size=3, fps=30, teams=["red"] * 3 + ["blue"] * 3, frames=frames), f)
-    print("replay", len(frames), "frames")
 
 
 def build_icon(size=1024):
@@ -122,14 +106,14 @@ def record_kickoff_loop(min_s=14, max_s=30, fps=30, seed=3):
         rng_seed += 1
 
 
-def build_readme_header(fps=15, out=".github/header.svg"):
+def build_readme_header(fps=15, out=".github/header.svg", radius=12, height=150):
     """Animated SVG banner for the GitHub README: the 3v3 champion playing itself on the Big
     pitch (SMIL animation from the recorded replay, plays in any browser via <img>), with the
     logo and title on top. Wide and short: the pitch is shown at full width and a "camera"
     pans up and down to follow the ball. Pure vector, no fonts or images to load."""
     teams = ["red"] * 3 + ["blue"] * 3
     frames = record_kickoff_loop()[:: 30 // fps]
-    W, H = 1000, 150
+    W, H = 1000, height
     sc, ox, oy = W / 1180, W / 2, H / 2
     X = lambda x: round(ox + x * sc, 1)  # noqa: E731
     Y = lambda y: round(oy + y * sc, 1)  # noqa: E731
@@ -147,7 +131,7 @@ def build_readme_header(fps=15, out=".github/header.svg"):
              '<defs><radialGradient id="fade" cx=".5" cy=".5" r=".6" gradientTransform="translate(0 0) scale(1 1)">'
              '<stop offset="0" stop-color="#000" stop-opacity=".5"/><stop offset=".6" stop-color="#000" stop-opacity=".22"/>'
              '<stop offset="1" stop-color="#000" stop-opacity=".1"/></radialGradient>'
-             f'<clipPath id="r"><rect width="{W}" height="{H}" rx="12"/></clipPath></defs>',
+             f'<clipPath id="r"><rect width="{W}" height="{H}" rx="{radius}"/></clipPath></defs>',
              '<g clip-path="url(#r)">', f'<rect width="{W}" height="{H}" fill="#5f7d4b"/>',
              f'<g><animateTransform attributeName="transform" type="translate" values="{cam_vals}" dur="{dur}" repeatCount="indefinite"/>']
     n = 14
@@ -201,9 +185,8 @@ if __name__ == "__main__":
     only = sys.argv[1:]
     if not only or "policies" in only:
         build_policies()
-    if not only or "replay" in only:
-        build_replay()
     if not only or "icon" in only:
         build_icon()
     if not only or "header" in only:
-        build_readme_header()
+        build_readme_header()                                            # GitHub README banner
+        build_readme_header(out="app/assets/header.svg", radius=0, height=210)  # the app's header: edge to edge, a bit taller

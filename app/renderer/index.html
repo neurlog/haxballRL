@@ -8,15 +8,7 @@
 </head>
 <body>
   <header>
-    <canvas id="pitch" width="1120" height="400"></canvas>
-    <div class="shade"></div>
-    <div class="brand">
-      <img src="../assets/icon.png" alt="" class="logo">
-      <div>
-        <h1>haxballRL</h1>
-        <p>Play against RL-trained bots</p>
-      </div>
-    </div>
+    <img src="../assets/header.svg" alt="haxballRL - Play against RL-trained bots">
   </header>
 
   <main>
@@ -30,14 +22,14 @@
     <section id="settings" hidden>
       <h2 id="settingsTitle">Room</h2>
       <div class="fields">
+        <label class="wide">Room name
+          <input id="roomName" type="text" placeholder="haxballRL" maxlength="40" spellcheck="false">
+        </label>
         <label>Password
           <input id="password" type="text" value="bot" maxlength="30" spellcheck="false">
         </label>
         <label>Max players
           <input id="maxPlayers" type="number" min="1" max="12" value="4">
-        </label>
-        <label class="wide">Room name
-          <input id="roomName" type="text" placeholder="haxballRL" maxlength="40" spellcheck="false">
         </label>
       </div>
     </section>
@@ -46,6 +38,7 @@
     <section id="live" hidden>
       <h2 id="liveTitle">Your room</h2>
       <p id="status" class="status">Starting…</p>
+      <p id="countdown" class="countdown" hidden></p>
       <div id="linkBox" class="linkbox" hidden>
         <div class="row"><span class="k">Link</span><code id="link"></code></div>
         <div class="row"><span class="k">Password</span><code id="pw"></code></div>
@@ -54,16 +47,24 @@
           <button id="copy" class="secondary">Copy link</button>
         </div>
       </div>
+      <div id="botBox" class="botbox" hidden>
+        <div class="bots">Bots <span id="botCount" class="count">1 / 2</span></div>
+        <div class="commands">
+          <button id="removeBot" class="cmd">Remove</button>
+          <button id="addBot" class="cmd">Add</button>
+        </div>
+      </div>
     </section>
   </main>
 
   <footer>
-    <button id="back" class="back" hidden>Back</button>
-    <button id="play" class="play" disabled>Play</button>
-    <button id="create" class="play" hidden>Create room</button>
-    <button id="stop" class="stop" hidden>Close room</button>
+    <button id="play" class="cmd primary" disabled>Play</button>
+    <button id="back" class="cmd" hidden>Back</button>
+    <button id="create" class="cmd primary" hidden>Create room</button>
+    <button id="closeRoom" class="cmd primary" hidden>Close room</button>
+    <button id="back2" class="cmd" hidden>Back</button>
   </footer>
-  <script src="pitch.js"></script>
+
   <script src="renderer.js"></script>
 </body>
 </html>

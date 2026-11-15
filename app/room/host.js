@@ -1,11 +1,13 @@
 // Hosts a private HaxBall room with trained haxballrl bots. Runs in its own process
 // (Electron utilityProcess): the app sends {type: "start", ...} and gets events back.
 //
-// Lobby: the room opens with `team_size` bots on red and `team_size` bots on blue, and
-// nothing starts by itself. The first person to join (whoever made the room) becomes the
+// Lobby: the room opens with one bot (on red) and nothing starts by itself. The app's
+// "Add bot" / "Remove bot" buttons add or remove bots, up to 2 x team_size (2 in 1v1,
+// 6 in 3v3). A new bot takes the first free team spot (red, then blue), else spectators. The first person to join (whoever made the room) becomes the
 // owner (admin): they drag bots and friends between red / blue / spectators in HaxBall's
 // lobby and press Start. Everyone else joins as a spectator. If the owner leaves, the next
 // person in the room becomes owner. Bots on a team play; bots in spectators idle.
+// If nobody joins within 60 s of the room opening, it closes itself.
 //
 // Observation + network: ../../headless-bot/policy.js logic, copied into ./policy.js so the
 // packaged app is self-contained (parity-tested against the Python trainer).
@@ -22,7 +24,7 @@ let cfg = null;
 const bots = new Map(); // id -> {team, lastActions, lastKey}
 let tick = 0;
 
-const send = (msg) => { if (process.parentPort) process.parentPort.postMessage(msg); else console.log(JSON.stringify(msg)); };
+let send = (msg) => { if (process.parentPort) process.parentPort.postMessage(msg); else console.log(JSON.stringify(msg)); };
 const log = (text) => send({ type: "log", text });
 let after = (fn) => Utils.runAfterGameTick(fn);
 const humans = () => (room ? room.players.filter((p) => !bots.has(p.id)) : []);
@@ -49,14 +51,61 @@ function addBot(team) {
 }
 
 let owner = null; // player id of the room owner (admin)
+const JOIN_TIMEOUT_S = 60; // close the room if nobody joins within this long after it opens
+let joinTimer = null;
+let closeReason = null; // set when we close the room ourselves, so onClose reports why
+
+const maxBots = () => 2 * P.mode.team_size;
+const pushBots = () => send({ type: "bots", count: bots.size, max: maxBots() });
 
 function setupLobby() {
-  for (let i = 0; i < P.mode.team_size; i++) addBot(RED);
-  for (let i = 0; i < P.mode.team_size; i++) addBot(BLUE);
+  addBot(RED);
+  pushBots();
+}
+
+function teamCount(team) {
+  return room.players.filter((p) => p.team && p.team.id === team).length;
+}
+
+// "Add bot" from the app: first free spot on red, then blue, else spectators
+function requestAddBot() {
+  if (!room || bots.size >= maxBots()) return pushBots();
+  const ts = P.mode.team_size;
+  addBot(teamCount(RED) < ts ? RED : teamCount(BLUE) < ts ? BLUE : SPEC);
+  pushBots();
+  pushPlayers();
+}
+
+// "Remove bot" from the app: a bot sitting in spectators first, else the newest bot
+function requestRemoveBot() {
+  if (!room || bots.size === 0) return pushBots();
+  const ids = [...bots.keys()];
+  const spec = ids.filter((id) => { const p = room.getPlayer(id); return !p || !p.team || p.team.id === SPEC; });
+  const id = spec.length ? spec[spec.length - 1] : ids[ids.length - 1];
+  bots.delete(id);
+  try { room.fakePlayerLeave(id); } catch (e) { log(`bot leave failed: ${e.message}`); }
+  pushBots();
+  pushPlayers();
+}
+
+let exitProcess = () => setTimeout(() => process.exit(0), 300);
+
+// Close the room if nobody joins within `seconds` (the app shows a countdown).
+function startJoinTimer(seconds) {
+  if (owner !== null || joinTimer) return;
+  send({ type: "countdown", seconds });
+  joinTimer = setTimeout(() => {
+    joinTimer = null;
+    closeReason = `nobody joined within ${Math.round(seconds)} s`;
+    send({ type: "closed", reason: closeReason });
+    try { room.leave(); } catch (e) { /* already closed */ }
+    exitProcess();
+  }, seconds * 1000);
 }
 
 function onJoin(p) {
   if (bots.has(p.id)) return;
+  if (joinTimer) { clearTimeout(joinTimer); joinTimer = null; send({ type: "joined" }); }
   if (humans().length > cfg.maxPlayers) {
     after(() => room.kickPlayer(p.id, `Room is full (${cfg.maxPlayers} players)`, false));
     return;
@@ -136,7 +185,7 @@ function start(msg) {
   log(`creating room for ${m.title}…`);
   Room.create(
     { name: msg.roomName || `haxballRL ${m.title}`, password: msg.password || undefined, showInRoomList: false,
-      maxPlayerCount: Math.min(30, msg.maxPlayers + 2 * m.team_size), token: msg.token, noPlayer: true },
+      maxPlayerCount: Math.min(30, msg.maxPlayers + 2 * m.team_size), token: msg.token, noPlayer: true },  // humans + max bots
     {
       storage: { player_name: "haxballRL", avatar: "🤖" },
       onOpen: (r) => {
@@ -151,7 +200,10 @@ function start(msg) {
           if (typeof room.lockTeams === "function") room.lockTeams(); // only the host moves players between teams
         });
         setupLobby();
-        room.onRoomLink = (link) => send({ type: "link", link, password: msg.password || "" });
+        room.onRoomLink = (link) => {
+          send({ type: "link", link, password: msg.password || "" });
+          startJoinTimer(JOIN_TIMEOUT_S);
+        };
         room.onPlayerJoin = onJoin;
         room.onPlayerLeave = onLeave;
         room.onPlayerTeamChange = (id) => {
@@ -172,6 +224,7 @@ function start(msg) {
         pushPlayers();
       },
       onClose: (reason) => {
+        if (closeReason) return; // we closed it and already said why
         const code = reason && (reason.code !== undefined ? reason.code : reason);
         const text = code === 38 ? "HaxBall rejected the room token - press Play to solve a fresh captcha"
           : String((reason && (reason.message || reason.code)) || reason || "closed");
@@ -183,6 +236,8 @@ function start(msg) {
 }
 
 function stop() {
+  closeReason = "stopped";
+  if (joinTimer) { clearTimeout(joinTimer); joinTimer = null; }
   try { if (room) room.leave(); } catch (e) { /* already closed */ }
   send({ type: "closed", reason: "stopped" });
   setTimeout(() => process.exit(0), 300);
@@ -194,13 +249,19 @@ if (process.parentPort) {
     if (msg.type === "start") {
       try { start(msg); } catch (err) { send({ type: "error", text: err.message }); }
     } else if (msg.type === "stop") stop();
+    else if (msg.type === "add-bot") requestAddBot();
+    else if (msg.type === "remove-bot") requestRemoveBot();
   });
 }
 
 // test hook (tests/host.test.js): drive the bot logic with a fake room
-function _attachForTest(fakeRoom, policy, config, immediate) {
-  room = fakeRoom; P = policy; cfg = config || {}; owner = null;
+function _attachForTest(fakeRoom, policy, config, immediate, events) {
+  room = fakeRoom; P = policy; cfg = config || {}; owner = null; closeReason = null;
+  if (joinTimer) { clearTimeout(joinTimer); joinTimer = null; }
+  exitProcess = () => {};
+  if (events) send = (m) => events.push(m);
   if (immediate) after = (fn) => fn();
 }
 
-module.exports = { start, stop, decide, addBot, setupLobby, onJoin, onLeave, bots, owner: () => owner, _attachForTest };
+module.exports = { start, stop, decide, addBot, setupLobby, requestAddBot, requestRemoveBot, startJoinTimer, onJoin, onLeave, bots,
+                   owner: () => owner, _attachForTest };

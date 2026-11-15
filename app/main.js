@@ -16,7 +16,7 @@ function policiesDir() { return path.join(__dirname, "policies"); }
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 560, height: 580, resizable: false, title: "haxballRL", backgroundColor: "#ffffff",
+    width: 560, height: 540, resizable: false, title: "haxballRL", backgroundColor: "#ffffff",
     icon: path.join(__dirname, "assets", "icon.png"),
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false },
   });
@@ -30,14 +30,15 @@ function createWindow() {
       pick: "",
       selected: "document.querySelector('.mode:nth-child(2)').click();",
       settings: "document.querySelector('.mode:nth-child(2)').click(); document.getElementById('play').click();",
-      live: "document.querySelector('.mode:nth-child(2)').click(); document.getElementById('play').click();" +
-            "document.getElementById('settings').hidden = true; document.getElementById('live').hidden = false;" +
-            "document.getElementById('create').hidden = true; document.getElementById('back').hidden = true;" +
-            "document.getElementById('stop').hidden = false;",
+      live: "document.querySelector('.mode:nth-child(1)').click(); document.getElementById('play').click(); show('live');",
     }[step];
     win.webContents.once("did-finish-load", () => setTimeout(async () => {
       await win.webContents.executeJavaScript(js);
-      if (step === "live") toWindow({ type: "link", link: "https://www.haxball.com/play?c=AbCdEfGhIjK", password: "bot" });
+      if (step === "live") {
+        toWindow({ type: "link", link: "https://www.haxball.com/play?c=AbCdEfGhIjK", password: "bot" });
+        toWindow({ type: "bots", count: 1, max: 2 });
+        toWindow({ type: "countdown", seconds: 60 });
+      }
       setTimeout(async () => {
         const img = await win.webContents.capturePage();
         fs.writeFileSync(process.env.HAXBALLRL_SNAPSHOT, img.toPNG());
@@ -81,7 +82,6 @@ function stopHost() {
 }
 
 ipcMain.handle("modes", () => JSON.parse(fs.readFileSync(path.join(policiesDir(), "index.json"), "utf8")));
-ipcMain.handle("replay", () => JSON.parse(fs.readFileSync(path.join(__dirname, "assets", "replay.json"), "utf8")));
 
 ipcMain.handle("start-room", async (_e, opts) => {
   stopHost();
@@ -98,6 +98,8 @@ ipcMain.handle("start-room", async (_e, opts) => {
 });
 
 ipcMain.handle("stop-room", () => { stopHost(); });
+ipcMain.handle("add-bot", () => { if (hostProc) hostProc.postMessage({ type: "add-bot" }); });
+ipcMain.handle("remove-bot", () => { if (hostProc) hostProc.postMessage({ type: "remove-bot" }); });
 ipcMain.handle("open-link", (_e, url) => { if (/^https:\/\/www\.haxball\.com\//.test(url)) shell.openExternal(url); });
 ipcMain.handle("copy", (_e, text) => clipboard.writeText(String(text)));
 
@@ -110,6 +112,7 @@ if (process.env.HAXBALLRL_HOSTTEST) {
     p.on("exit", (c) => console.log("host exit", c));
     const policy = JSON.parse(fs.readFileSync(path.join(policiesDir(), "3v3-big.json"), "utf8"));
     p.postMessage({ type: "start", token: "thr1.invalid", policy, password: "bot", maxPlayers: 4 });
+    p.postMessage({ type: "add-bot" }); p.postMessage({ type: "add-bot" }); p.postMessage({ type: "remove-bot" });
     setTimeout(() => { p.kill(); app.quit(); }, 12000);
   });
 } else app.whenReady().then(() => {

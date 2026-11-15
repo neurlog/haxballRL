@@ -44,11 +44,11 @@ events. This checks that node-haxball and its native WebRTC module load inside E
 |---|---|
 | `main.js` | Electron main process: window, captcha/token window, starts the room process |
 | `preload.js` | the small API the window may call |
-| `renderer/` | the window: header replay (`pitch.js`), mode cards and room panel (`renderer.js`) |
+| `renderer/` | the window: animated header (`assets/header.svg`), bot list and room panel (`renderer.js`) |
 | `room/host.js` | hosts the room with node-haxball and runs the bots (one process per room) |
 | `room/policy.js` | observation + network in JS; must stay identical to `headless-bot/policy.js` (parity-tested) |
 | `policies/` | bot weights + mode settings, built from the trained models |
-| `assets/` | logo and the recorded 3v3 match behind the header |
+| `assets/` | logo and the animated header (a recorded 3v3 bot match, kickoff to kickoff) |
 | `tools/build_assets.py` | rebuilds `policies/` and `assets/` from the models |
 
 ## Adding a game mode

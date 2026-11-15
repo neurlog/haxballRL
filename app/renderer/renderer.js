@@ -9,11 +9,13 @@ function show(step) {
   $("pick").hidden = step !== "pick";
   $("settings").hidden = step !== "settings";
   $("live").hidden = step !== "live";
+  // bottom bar: the one or two buttons for this step
   $("play").hidden = step !== "pick";
-  $("create").hidden = step !== "settings";
-  $("back").hidden = step !== "settings";
-  $("stop").hidden = step !== "live";
+  $("back").hidden = $("create").hidden = step !== "settings";
+  $("closeRoom").hidden = step !== "live";
+  $("back2").hidden = true;
 }
+function showBackOnly() { $("closeRoom").hidden = true; $("back2").hidden = false; }
 
 function renderModes() {
   $("modes").innerHTML = "";
@@ -32,18 +34,42 @@ function renderModes() {
 
 function setStatus(text, error = false) { $("status").textContent = text; $("status").className = "status" + (error ? " error" : ""); }
 
+let countdownTimer = null;
+function stopCountdown() { clearInterval(countdownTimer); countdownTimer = null; $("countdown").hidden = true; }
+function startCountdown(seconds) {
+  stopCountdown();
+  const end = Date.now() + seconds * 1000;
+  const tick = () => {
+    const left = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+    $("countdown").textContent = `Closes in ${left}s if nobody joins`;
+    if (left === 0) stopCountdown();
+  };
+  $("countdown").hidden = false;
+  tick();
+  countdownTimer = setInterval(tick, 250);
+}
+
 api.onEvent((msg) => {
   if (msg.type === "status") setStatus(msg.text);
-  else if (msg.type === "error") setStatus(msg.text, true);
+  else if (msg.type === "error") { setStatus(msg.text, true); showBackOnly(); }
   else if (msg.type === "link") {
     link = msg.link;
     $("link").textContent = msg.link;
     $("pw").textContent = msg.password || "(no password)";
     $("linkBox").hidden = false;
-    setStatus("Your room is ready. Join with the link first and you'll be the room owner: drag the bots and your friends between the teams, then press Start.");
+    setStatus("Your room is ready. Join with the link first and you'll be the room owner.");
+    $("botBox").hidden = false;
+  } else if (msg.type === "countdown") startCountdown(msg.seconds);
+  else if (msg.type === "joined") stopCountdown();
+  else if (msg.type === "bots") {
+    $("botCount").textContent = `${msg.count} / ${msg.max}`;
+    $("addBot").disabled = msg.count >= msg.max;
+    $("removeBot").disabled = msg.count <= 0;
   } else if (msg.type === "closed") {
+    stopCountdown();
+    $("botBox").hidden = true;
+    showBackOnly();
     setStatus(`Room closed (${msg.reason}).`, msg.reason !== "stopped");
-    $("stop").textContent = "Back";
   }
 });
 
@@ -57,8 +83,9 @@ $("back").onclick = () => show("pick");
 $("create").onclick = async () => {
   link = "";
   $("linkBox").hidden = true;
+  $("botBox").hidden = true;
+  stopCountdown();
   $("liveTitle").textContent = `${selected.title} room`;
-  $("stop").textContent = "Close room";
   setStatus("Starting…");
   show("live");
   await api.startRoom({
@@ -66,8 +93,11 @@ $("create").onclick = async () => {
     maxPlayers: Math.max(1, Math.min(12, parseInt($("maxPlayers").value, 10) || 1)),
   });
 };
-$("stop").onclick = async () => { await api.stopRoom(); show("pick"); };
+$("closeRoom").onclick = async () => { stopCountdown(); await api.stopRoom(); show("pick"); };
+$("back2").onclick = () => show("pick");
 $("open").onclick = () => link && api.openLink(link);
+$("addBot").onclick = () => api.addBot();
+$("removeBot").onclick = () => api.removeBot();
 $("copy").onclick = async () => {
   if (!link) return;
   await api.copy(link);

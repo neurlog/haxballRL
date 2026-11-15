@@ -4,9 +4,10 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("haxballrl", {
   modes: () => ipcRenderer.invoke("modes"),
-  replay: () => ipcRenderer.invoke("replay"),
   startRoom: (opts) => ipcRenderer.invoke("start-room", opts),
   stopRoom: () => ipcRenderer.invoke("stop-room"),
+  addBot: () => ipcRenderer.invoke("add-bot"),
+  removeBot: () => ipcRenderer.invoke("remove-bot"),
   openLink: (url) => ipcRenderer.invoke("open-link", url),
   copy: (text) => ipcRenderer.invoke("copy", text),
   onEvent: (fn) => ipcRenderer.on("host-event", (_e, msg) => fn(msg)),
