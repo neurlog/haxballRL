@@ -2,8 +2,7 @@
 
 * champion  - frozen copy of the best agent so far. The learner is promoted when it
               beats the current champion >= 75% (checked every N games).
-* members   - the hall of fame: every retired champion and a learner snapshot every N
-              games (optionally the scripted bot as a permanent member "bot").
+* members   - the hall of fame: every retired champion and a learner snapshot every N games.
 * PFSP      - opponents are drawn from the members the learner does worst against:
               with prob 1-explore from the `topk` hardest, weighted by (1 - winrate)^p;
               with prob `explore` uniformly, so win rates of "solved" members stay fresh
@@ -22,12 +21,8 @@ import random
 
 import torch
 
-BOT_ID = "bot"
-
-
 class League:
-    def __init__(self, run_dir, model_ctor, topk=10, explore=0.1, power=2.0, max_size=60, window=60, cache_size=16,
-                 include_bot=False):
+    def __init__(self, run_dir, model_ctor, topk=10, explore=0.1, power=2.0, max_size=60, window=60, cache_size=16):
         self.dir = os.path.join(run_dir, "league")
         os.makedirs(self.dir, exist_ok=True)
         self.model_ctor = model_ctor
@@ -41,8 +36,6 @@ class League:
         self.champion_gen = 0
         self.champion_since_games = 0
         self._champion_model = None
-        if include_bot:
-            self._add_meta(BOT_ID, "bot", None, 0)
 
     # ------------------------------------------------------------------ members
     def _add_meta(self, mid, kind, gen, games, results=()):
@@ -90,7 +83,7 @@ class League:
 
     def sample(self, rng=random):
         """A member id, or None while the league has no model members yet."""
-        if not any(m["kind"] != "bot" for m in self.members):
+        if not self.members:
             return None
         if rng.random() < self.explore:
             return rng.choice(self.members)["id"]
@@ -99,13 +92,11 @@ class League:
         return rng.choices(cands, weights=w, k=1)[0]["id"]
 
     def league_winrate(self, min_games=5):
-        """Average win rate vs model members (past champions / snapshots), excluding the bot."""
-        xs = [self.winrate(m) for m in self.members if m["kind"] != "bot" and len(m["results"]) >= min_games]
+        """Average win rate vs league members (past champions / snapshots)."""
+        xs = [self.winrate(m) for m in self.members if len(m["results"]) >= min_games]
         return sum(xs) / len(xs) if xs else None
 
     def model(self, mid):
-        if mid == BOT_ID:
-            return None
         if mid in self.cache:
             self.cache.move_to_end(mid)
             return self.cache[mid]
@@ -119,8 +110,6 @@ class League:
 
     @staticmethod
     def name(m):
-        if m["kind"] == "bot":
-            return "bot"
         return f"champ{m['gen']}" if m["kind"] == "champion" else f"snap@{m['games_at']}"
 
     # ------------------------------------------------------------------ champion
@@ -165,11 +154,10 @@ class League:
             meta = json.load(f)
         self.members, self.states, self.cache = [], {}, collections.OrderedDict()
         for m in meta["members"]:
-            if m["id"] != BOT_ID:
-                p = os.path.join(self.dir, f"{m['id']}.pt")
-                if not os.path.exists(p):
-                    continue
-                self.states[m["id"]] = torch.load(p, map_location="cpu", weights_only=True)
+            p = os.path.join(self.dir, f"{m['id']}.pt")
+            if m["kind"] == "bot" or not os.path.exists(p):  # skip the old scripted-bot member
+                continue
+            self.states[m["id"]] = torch.load(p, map_location="cpu", weights_only=True)
             self._add_meta(m["id"], m["kind"], m["gen"], m["games_at"], m["results"])
         self.next_id = meta["next_id"]
         self.champion_gen = meta["champion_gen"]

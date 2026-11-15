@@ -27,7 +27,7 @@ python 1v1-classic/train.py --name exp2                   # a separate run
 
 ```bash
 python 1v1-classic/play.py --red gen2 --blue gen1              # champion gen 2 vs gen 1
-python 1v1-classic/play.py --red champion --blue bot           # champion vs scripted bot
+python 1v1-classic/play.py --red champion --blue latest        # champion vs the latest learner
 python 1v1-classic/play.py --red human --blue champion         # you vs the champion
 python 1v1-classic/play.py --red gen3 --blue gen1 --fast --games 64   # 64 games, no window
 ```

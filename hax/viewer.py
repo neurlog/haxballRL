@@ -3,7 +3,7 @@
 `run_viewer(payload)` is what the trainer launches in a separate process every N games:
 the current learner (red) plays the current champion (blue) in real time for a few
 seconds next to charts of the training log.
-Keys in the window: D = sampled/argmax actions, B = blue: champion -> bot -> learner, Esc = close.
+Keys in the window: D = sampled/argmax actions, B = blue: champion <-> learner, Esc = close.
 """
 
 from __future__ import annotations
@@ -135,8 +135,8 @@ class Renderer:
         col = lambda k: [r.get(k) for r in rows]  # noqa: E731
         w, h, pad = 250, 108, 8
         charts = [
-            ("win rate (bot = eval)", [("champ", (240, 200, 80), col("win_champ")), ("league", (120, 200, 240), col("win_league")),
-                          ("bot", (200, 120, 240), col("win_bot"))], 0, 1),
+            ("win rate", [("champ", (240, 200, 80), col("win_champ")), ("league", (120, 200, 240), col("win_league"))],
+             0, 1),
             ("champion generation", [("gen", (240, 200, 80), col("champion_gen"))], None, None),
             ("goals / game (self-play)", [("goals", (240, 240, 240), col("goals_per_game"))], 0, None),
             ("ball contact s / game", [("contact", (240, 240, 240), col("contact_s"))], 0, None),
@@ -155,14 +155,13 @@ def run_viewer(payload):
     import pygame
     import torch
 
-    from .bots import scripted_actions
     from .env import HaxEnv
     from .model import HaxNet
 
     torch.set_num_threads(1)
     ts = payload["team_size"]
     env = HaxEnv(1, team_size=ts, stadium=payload.get("stadium", "classic"),
-                 seed=int(time.time()), ping_ms=payload.get("ping_ms", 40.0))
+                 seed=int(time.time()), ping_ms=payload.get("ping_ms", 0.0))
     nets = {}
     for k in ("learner", "champion"):
         if payload.get(k) is not None:
@@ -174,7 +173,7 @@ def run_viewer(payload):
     panel = 2 * 250 + 3 * 8
     r = Renderer(payload.get("stadium", "classic"), title=payload.get("title", "HaxBall RL training"), panel_width=panel)
     r.draw_panel(rows, r.field_w)
-    blue_modes = ["champion", "bot", "learner"]
+    blue_modes = ["champion", "learner"]
     bm, det = 0, False
     obs = env.observe()
     clock = pygame.time.Clock()
@@ -191,11 +190,8 @@ def run_viewer(payload):
         o = torch.from_numpy(obs.reshape(-1, env.obs_dim))
         acts = nets["learner"].act(o, env.n_mates, env.n_opps, det)[0].numpy().reshape(1, -1)
         mode = blue_modes[bm]
-        if mode == "bot":
-            acts[:, ts:] = scripted_actions(env)[:, ts:]
-        else:
-            net = nets.get(mode, nets["learner"])
-            acts[:, ts:] = net.act(o[ts:], env.n_mates, env.n_opps, det)[0].numpy()
+        net = nets.get(mode, nets["learner"])
+        acts[:, ts:] = net.act(o[ts:], env.n_mates, env.n_opps, det)[0].numpy()
         obs, _, _, fin = env.step(acts)
         f = env.frame(0)
         if fin:

@@ -4,8 +4,8 @@
 //   2. put HEADLESS_TOKEN=<token from https://www.haxball.com/headlesstoken> in headless-bot/.env
 //   3. node headless-bot/bot.js        -> prints a room link; open it in your browser
 //
-// Optional env: ROOM_NAME, ROOM_PASS (default "bot"), BOT_PING_MS (default 40: delay the bot's
-// inputs like the ping it trained with), DETERMINISTIC=1 (argmax instead of sampling).
+// Optional env: ROOM_NAME, ROOM_PASS (default "bot"), BOT_PING_MS (default 0: extra delay on the
+// bot's inputs, to match a model trained with --ping-ms), DETERMINISTIC=1 (argmax instead of sampling).
 //
 // Room structure adapted from HaxballGym's headless-bot (MIT). node-haxball loads the official
 // HaxBall engine; the policy and observation live in policy.js (parity-tested vs Python).
@@ -35,7 +35,7 @@ const CFG = {
   roomName: process.env.ROOM_NAME || "haxballrl bot (private)",
   password: process.env.ROOM_PASS || "bot",
   frameSkip: 2, // the policy decides every 2 ticks, as in training
-  pingTicks: parseFloat(process.env.BOT_PING_MS || "40") * 60 / 1000,
+  pingTicks: parseFloat(process.env.BOT_PING_MS || "0") * 60 / 1000,
   deterministic: process.env.DETERMINISTIC === "1",
   timeLimitMin: 3,
   goalX: 370,

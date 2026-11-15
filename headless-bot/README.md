@@ -50,7 +50,7 @@ Options, set as environment variables or in `.env`:
 |---|---|---|
 | `ROOM_NAME` | `haxballrl bot (private)` | room title |
 | `ROOM_PASS` | `bot` | room password |
-| `BOT_PING_MS` | `40` | Delays the bot's inputs by this much, to match the ping it trained with. The host's own bot otherwise has zero lag, which it never saw in training. |
+| `BOT_PING_MS` | `0` | Extra delay on the bot's inputs. Leave it at 0 for models trained with the default `--ping-ms 0`; set it to the training ping if you trained with one. |
 | `DETERMINISTIC` | off | `1` = always pick the most likely action. By default actions are sampled, as in training. |
 
 ## How it lines up with training

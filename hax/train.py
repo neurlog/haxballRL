@@ -5,10 +5,8 @@ Each env slot has a fixed role, so the number of learner agents never changes:
     self    both teams are the learner (two learner agents per game)
     champ   learner vs the frozen champion (supplies the promotion statistics)
     league  learner vs a PFSP-sampled league member (resampled every game)
-    bot     learner vs the scripted bot (off by default; --frac-bot)
 
-Default mix: 45% self-play, 30% champion, 25% league. The scripted bot is used only as an
-evaluation yardstick (`--eval-bot-every`), not as a training opponent.
+Default mix: 45% self-play, 30% champion, 25% league.
 
 The learner swaps colour every game. Every `promote_every` games the learner is promoted
 to champion if it beat the champion >= 75% over >= 60 games and averages >= 50% against
@@ -33,39 +31,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .bots import scripted_actions
 from .env import ENT_DIM, N_ACTIONS, SELF_DIM, HaxEnv
-from .league import BOT_ID, League
+from .league import League
 from .model import HaxNet, load_policy
 
-MODES = ("self", "champ", "league", "bot")
-
-
-@torch.no_grad()
-def eval_vs_bot(model, n_games, args):
-    """Learner vs the scripted bot, one game per env (half as red, half as blue).
-    Returns the mean result (1 win, 0.5 draw, 0 loss). Not used for training."""
-    from .env import HaxEnv as _Env
-    env = _Env(n_games, team_size=args.team_size, stadium=args.stadium, seed=random.randrange(1 << 30),
-               ping_ms=args.ping_ms, jitter_ms=args.jitter_ms, frame_skip=args.frame_skip,
-               time_limit_s=args.time_limit, overtime_limit_s=args.overtime_limit,
-               kickoff_timeout_s=args.kickoff_timeout)
-    ts, P = env.ts, env.P
-    learner_red = np.arange(n_games) % 2 == 0
-    mask = np.zeros((n_games, P), bool)
-    mask[learner_red, :ts] = True
-    mask[~learner_red, ts:] = True
-    obs, res = env.observe(), {}
-    while len(res) < n_games:
-        a = scripted_actions(env)
-        o = torch.from_numpy(obs[mask])
-        a[mask] = model.act(o, env.n_mates, env.n_opps)[0].numpy()
-        obs, _, _, fin = env.step(a)
-        for e, rg, bg, *_ in fin:
-            if e not in res:
-                mine, theirs = (rg, bg) if learner_red[e] else (bg, rg)
-                res[e] = 1.0 if mine > theirs else (0.5 if mine == theirs else 0.0)
-    return float(np.mean(list(res.values())))
+MODES = ("self", "champ", "league")
 
 
 def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
@@ -79,8 +49,8 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     # game
     a("--team-size", type=int, default=1)
     a("--stadium", default="classic")
-    a("--ping-ms", type=float, default=40.0)
-    a("--jitter-ms", type=float, default=4.0)
+    a("--ping-ms", type=float, default=0.0, help="simulated input latency for every agent")
+    a("--jitter-ms", type=float, default=0.0)
     a("--frame-skip", type=int, default=2, help="physics ticks per decision (2 = 30 decisions/s)")
     a("--time-limit", type=float, default=180.0)
     a("--overtime-limit", type=float, default=60.0)
@@ -92,12 +62,12 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     # linearly from the 'early' to the 'late' value over --reward-stage-games, like the RLGym
     # guide's stages: first learn to reach and touch the ball, then shift to moving it to goal.
     # Nothing is removed completely. Set all to 0 for goals + wins only.
-    a("--speed-early", type=float, default=0.02, help="speed towards the ball (clipped at 0)")
-    a("--speed-late", type=float, default=0.0005)
+    a("--speed-early", type=float, default=0.02, help="velocity towards the ball (signed)")
+    a("--speed-late", type=float, default=0.002)
     a("--touch-early", type=float, default=0.2, help="touch: change in ball velocity towards the goal (signed)")
-    a("--touch-late", type=float, default=0.005)
+    a("--touch-late", type=float, default=0.02)
     a("--btg-early", type=float, default=0.01, help="ball velocity towards the goal you attack")
-    a("--btg-late", type=float, default=0.005)
+    a("--btg-late", type=float, default=0.01)
     a("--reward-stage-games", type=float, default=3000)
     a("--kickoff-penalty", type=float, default=0.002, help="per decision while your own kickoff waits past the grace time")
     a("--kickoff-grace", type=float, default=5.0, help="seconds of free waiting at your own kickoff")
@@ -112,8 +82,8 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     a("--clip", type=float, default=0.2)
     a("--vf-coef", type=float, default=0.5)
     a("--ent-coef", type=float, default=0.01)
-    a("--ent-coef-final", type=float, default=0.01, help="RLGym guide: ~0.01, don't cut it while still training")
-    a("--ent-anneal-games", type=float, default=10000)
+    a("--ent-coef-final", type=float, default=0.002, help="entropy bonus after --ent-anneal-games")
+    a("--ent-anneal-games", type=float, default=5000)
     a("--max-grad", type=float, default=0.5)
     a("--target-kl", type=float, default=0.03)
     a("--hidden", type=int, default=256)
@@ -123,10 +93,6 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     # league
     a("--frac-champ", type=float, default=0.30)
     a("--frac-league", type=float, default=0.25)
-    a("--frac-bot", type=float, default=0.0)
-    a("--bot-in-league", action="store_true", help="also let PFSP pick the scripted bot")
-    a("--eval-bot-every", type=int, default=1000, help="eval games vs the scripted bot every N games (0 = off)")
-    a("--eval-bot-games", type=int, default=64)
     a("--promote-every", type=int, default=500)
     a("--promote-threshold", type=float, default=0.75)
     a("--promote-min-games", type=int, default=60)
@@ -176,7 +142,7 @@ def main(argv=None, defaults=None, mode_dir="."):
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, eps=1e-5)
     ctor = lambda: HaxNet(**mkw)  # noqa: E731
     league = League(run_dir, ctor, topk=args.pfsp_topk, explore=args.pfsp_explore, power=args.pfsp_power,
-                    max_size=args.league_size, include_bot=args.bot_in_league)
+                    max_size=args.league_size)
     snap = lambda: {k: v.detach().clone() for k, v in model.state_dict().items()}  # noqa: E731
 
     games, updates, rows = 0, 0, []
@@ -204,9 +170,8 @@ def main(argv=None, defaults=None, mode_dir="."):
     # ---- env slot roles (fixed), learner colour flips every game
     n_champ = int(round(N * args.frac_champ))
     n_league = int(round(N * args.frac_league))
-    n_bot = int(round(N * args.frac_bot))
-    n_self = N - n_champ - n_league - n_bot
-    env_mode = np.array([0] * n_self + [1] * n_champ + [2] * n_league + [3] * n_bot)
+    n_self = N - n_champ - n_league
+    env_mode = np.array([0] * n_self + [1] * n_champ + [2] * n_league)
     learner_red = np.array([e % 2 == 0 for e in range(N)])
     env_opp = [league.sample() if env_mode[e] == 2 else None for e in range(N)]
     env_gen = np.full(N, league.champion_gen)
@@ -230,8 +195,6 @@ def main(argv=None, defaults=None, mode_dir="."):
             base = ts if learner_red[e] else 0
             if env_mode[e] == 1:
                 key = "champ"
-            elif env_mode[e] == 3:
-                key = BOT_ID
             else:  # league; plays the champion until the league has model members
                 key = env_opp[e] if env_opp[e] is not None else "champ"
             groups[key] += [e * P + base + k for k in range(ts)]
@@ -242,7 +205,7 @@ def main(argv=None, defaults=None, mode_dir="."):
     L = len(learn_idx)
     T = args.rollout
     print(f"{ts}v{ts} on {args.stadium}: {N} games in parallel ({n_self} self-play, {n_champ} vs champion, "
-          f"{n_league} vs league, {n_bot} vs bot), {L} learner agents, ping {args.ping_ms:.0f}ms, "
+          f"{n_league} vs league), {L} learner agents, ping {args.ping_ms:.0f}ms, "
           f"{60 // args.frame_skip} decisions/s -> {run_dir}")
 
     b_obs = torch.zeros(T, L, D)
@@ -253,11 +216,9 @@ def main(argv=None, defaults=None, mode_dir="."):
     b_done = np.zeros((T, L), np.float32)
 
     obs = env.reset().reshape(N * P, D)
-    st = dict(champ=champ_results, league=collections.deque(maxlen=300), bot=collections.deque(maxlen=200),
+    st = dict(champ=champ_results, league=collections.deque(maxlen=300),
               goals=collections.deque(maxlen=300), contact=collections.deque(maxlen=300), len=collections.deque(maxlen=300))
     last_view = games // args.view_every
-    last_eval = games // args.eval_bot_every if args.eval_bot_every else 0
-    bot_eval = rows[-1].get("win_bot", float("nan")) if rows else float("nan")
     last_promo = games // args.promote_every
     last_snap = games // args.snapshot_every_games
     last_ckpt = games // args.ckpt_every_games
@@ -296,11 +257,8 @@ def main(argv=None, defaults=None, mode_dir="."):
                 acts = np.zeros(N * P, np.int64)
                 acts[learn_idx] = a.numpy()
                 for key, idx in groups.items():
-                    if key == BOT_ID:
-                        acts[idx] = scripted_actions(env).reshape(-1)[idx]
-                    else:
-                        net = league.champion_model() if key == "champ" else league.model(key)
-                        acts[idx] = net.act(o[idx], nm, no)[0].numpy()
+                    net = league.champion_model() if key == "champ" else league.model(key)
+                    acts[idx] = net.act(o[idx], nm, no)[0].numpy()
                 b_obs[t], b_act[t], b_logp[t], b_val[t] = o[learn_idx], a, logp, v
                 nobs, rew, done, finished = env.step(acts.reshape(N, P))
                 obs = nobs.reshape(N * P, D)
@@ -321,14 +279,11 @@ def main(argv=None, defaults=None, mode_dir="."):
                             if env_gen[e] == league.champion_gen:
                                 champ_results.append(res)
                             env_gen[e] = league.champion_gen
-                        elif mode == 2:
+                        else:
                             if env_opp[e] is not None:
                                 league.record(env_opp[e], res)
                                 st["league"].append(res)
                             env_opp[e] = league.sample()
-                        else:
-                            st["bot"].append(res)
-                            league.record(BOT_ID, res)
                         learner_red[e] = not learner_red[e]
                         regroup = True
                 if regroup:
@@ -423,7 +378,7 @@ def main(argv=None, defaults=None, mode_dir="."):
                 sps = sps_n / (now - sps_t)
                 sps_t, sps_n = now, 0
                 row = dict(games=games, updates=updates, sps=sps, champion_gen=league.champion_gen,
-                           win_champ=fmean(champ_results), win_league=fmean(st["league"]), win_bot=fmean(st["bot"]) if args.frac_bot > 0 else bot_eval,
+                           win_champ=fmean(champ_results), win_league=fmean(st["league"]),
                            goals_per_game=fmean(st["goals"]), contact_s=fmean(st["contact"]),
                            game_len_s=fmean(st["len"]), entropy=fmean(ent_hist[-args.log_every:]),
                            value_loss=fmean(vl_hist[-args.log_every:]), approx_kl=fmean(kl_hist[-args.log_every:]),
@@ -436,16 +391,10 @@ def main(argv=None, defaults=None, mode_dir="."):
                         w.writeheader()
                     w.writerow(row)
                 print(f"games {games:7d} | upd {updates:6d} | {sps / 1000:5.1f}k sps | gen {league.champion_gen:3d} | "
-                      f"win champ {row['win_champ']:.2f} league {row['win_league']:.2f} bot {row['win_bot']:.2f} | "
+                      f"win champ {row['win_champ']:.2f} league {row['win_league']:.2f} | "
                       f"goals/g {row['goals_per_game']:5.2f} contact {row['contact_s']:5.1f}s/g | "
                       f"ent {row['entropy']:.2f} vl {row['value_loss']:.4f} kl {row['approx_kl']:.4f}", flush=True)
 
-            if args.eval_bot_every and games // args.eval_bot_every > last_eval:
-                last_eval = games // args.eval_bot_every
-                te = time.time()
-                bot_eval = eval_vs_bot(model, args.eval_bot_games, args)
-                print(f"--- eval at {games} games: {bot_eval:.0%} vs scripted bot over {args.eval_bot_games} games "
-                      f"({time.time() - te:.0f}s, not used for training)", flush=True)
             if games // args.view_every > last_view:
                 last_view = games // args.view_every
                 launch_viewer()

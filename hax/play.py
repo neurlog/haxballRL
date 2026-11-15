@@ -3,14 +3,13 @@
 Each side is one of:
     latest      the run's latest learner          champion   the run's current champion
     gen3        champion generation 3 (any N)     ckpt:5000  the checkpoint saved at ~5000 games
-    bot         the scripted bot                  chase      HaxballGym's run-at-the-ball bot
     human       you (arrows/WASD move, Space/X kick)
     <path.pt>   any checkpoint or league .pt file
 
 Examples (from the repo root):
     python 1v1-classic/play.py --red gen2 --blue gen1        # two champions
     python 1v1-classic/play.py --red human --blue champion   # you vs the champion
-    python 1v1-classic/play.py --red latest --blue bot --games 20 --fast   # quick eval, no window
+    python 1v1-classic/play.py --red latest --blue gen1 --games 64 --fast  # quick eval, no window
 """
 
 from __future__ import annotations
@@ -23,13 +22,12 @@ import time
 import numpy as np
 import torch
 
-from .bots import chase_actions, scripted_actions
 from .env import HaxEnv, keys_to_action
 from .model import load_policy
 
 
 def resolve(spec: str, run_dir: str):
-    if spec in ("bot", "chase", "human"):
+    if spec == "human":
         return spec
     if spec == "latest":
         return os.path.join(run_dir, "latest.pt")
@@ -57,7 +55,7 @@ def main(argv=None, mode_dir=".", team_size=1, stadium="classic"):
     p.add_argument("--run", default="main", help="run name under runs/")
     p.add_argument("--red", default="latest")
     p.add_argument("--blue", default="champion")
-    p.add_argument("--ping-ms", type=float, default=40.0)
+    p.add_argument("--ping-ms", type=float, default=0.0)
     p.add_argument("--deterministic", action="store_true", help="argmax actions instead of sampling")
     p.add_argument("--games", type=int, default=0, help="stop after N games (0 = until Esc)")
     p.add_argument("--fast", action="store_true", help="no window: play --games games in parallel and print results")
@@ -66,7 +64,7 @@ def main(argv=None, mode_dir=".", team_size=1, stadium="classic"):
     sides = []
     for name in (args.red, args.blue):
         r = resolve(name, run_dir)
-        if r in ("bot", "chase", "human"):
+        if r == "human":
             sides.append((name, r))
         else:
             if not os.path.exists(r):
@@ -79,11 +77,7 @@ def main(argv=None, mode_dir=".", team_size=1, stadium="classic"):
         a = np.zeros((env.n, env.P), np.int64)
         for s, (_, pol) in enumerate(sides):
             sl = slice(s * ts, (s + 1) * ts)
-            if pol == "bot":
-                a[:, sl] = scripted_actions(env)[:, sl]
-            elif pol == "chase":
-                a[:, sl] = chase_actions(env)[:, sl]
-            elif pol == "human":
+            if pol == "human":
                 a[:, sl] = 0
             else:
                 rows = np.concatenate([np.arange(e * env.P, e * env.P + env.P)[sl] for e in range(env.n)])

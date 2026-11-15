@@ -2,7 +2,7 @@
 
     python headless-bot/parity_test.py [checkpoint]
 
-Plays a few hundred decisions of scripted-bot games in HaxEnv, records the raw state the
+Plays a few hundred decisions of random-action games in HaxEnv, records the raw state the
 Node bot would see in a real room, runs policy.js on it, and compares.
 """
 
@@ -22,7 +22,6 @@ sys.path.insert(0, os.path.dirname(HERE))
 
 from export_policy import export  # noqa: E402
 
-from hax.bots import scripted_actions  # noqa: E402
 from hax.env import RED, HaxEnv  # noqa: E402
 from hax.model import HaxNet, load_policy  # noqa: E402
 
@@ -41,7 +40,8 @@ def main():
     env = HaxEnv(4, team_size=1, seed=7)
     samples = []
     for step in range(900):
-        a = scripted_actions(env)
+        if step % 10 == 0:  # random actions held for a third of a second, so players cover the pitch
+            a = env.rng.integers(0, 18, (env.n, env.P))
         obs, _, _, _ = env.step(a)
         if step % 7:
             continue

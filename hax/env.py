@@ -4,7 +4,7 @@ HaxballGym (`haxball_core`) gives us the real engine: physics, kickoff barriers,
 150-tick goal celebration and the conceding-team re-kickoff. This module adds what a
 *game* needs on top, all vectorised over N matches:
 
-* **Simulated ping.** Every input reaches the engine `ping_ms` after the agent saw the
+* **Simulated ping (optional, default 0).** Every input reaches the engine `ping_ms` after the agent saw the
   state (stochastic rounding of the fractional tick plus Gaussian jitter, never
   reordered). The engine runs at tick_skip=1 so the delay has single-tick resolution,
   and the agent decides every `frame_skip` ticks.
@@ -20,7 +20,8 @@ HaxballGym (`haxball_core`) gives us the real engine: physics, kickoff barriers,
   * events: +/-`goal_reward` per goal scored/conceded, +/-`win_reward` to every player of
     the winning/losing team when the game ends (0 for a draw);
   * dense, per decision, weights set by `set_reward_weights(speed, touch, ball_to_goal)`:
-    - speed towards the ball, clipped at 0 (RLGym guide's SpeedTowardBallReward),
+    - velocity towards the ball, signed (HaxballGym/RLGym VelocityPlayerToBall): moving away
+      costs what moving closer earns, so stepping back and forth next to the ball earns ~0,
     - touch: the change in the ball's velocity TOWARDS THE GOAL YOU ATTACK while you are
       touching it, signed (a full kick straight at goal = +1, one straight away = -1).
       Kicking the ball into a wall and having it bounce back sums to about zero, so
@@ -75,8 +76,8 @@ class HaxEnv:
         team_size: int = 1,
         stadium: str = "classic",
         seed: int = 0,
-        ping_ms: float = 40.0,
-        jitter_ms: float = 4.0,
+        ping_ms: float = 0.0,
+        jitter_ms: float = 0.0,
         frame_skip: int = 2,
         time_limit_s: float = 180.0,
         overtime_limit_s: float = 60.0,
@@ -284,13 +285,13 @@ class HaxEnv:
 
     def _dense(self, st) -> np.ndarray:
         """Per-decision dense rewards (only while the ball is live), each in [-1, 1]:
-        * speed towards the ball, clipped at 0 (non-zero-sum; keeps both players engaged,
+        * velocity towards the ball, signed (non-zero-sum; keeps both players engaged,
           which is what stops the 'nobody touches the ball' collapse),
         * ball velocity towards the goal you attack (zero-sum-ish)."""
         live = (self.celeb == 0)[:, None]
         pb = st.ball_pos[:, None] - st.player_pos
         pbn = pb / np.maximum(np.linalg.norm(pb, axis=-1, keepdims=True), 1e-9)
-        speed = np.clip((pbn * st.player_vel).sum(-1) / PLAYER_TOP_SPEED, 0.0, 1.0)
+        speed = np.clip((pbn * st.player_vel).sum(-1) / PLAYER_TOP_SPEED, -1.0, 1.0)
         btg = np.clip((self._goal_dir(st.ball_pos) * st.ball_vel[:, None]).sum(-1) / BALL_SPEED_REF, -1.0, 1.0)
         return np.where(live, self.w_speed * speed + self.w_btg * btg, 0.0).astype(np.float32)
 

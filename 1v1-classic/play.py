@@ -2,7 +2,7 @@
 
     python 1v1-classic/play.py --red gen2 --blue gen1           # two champions
     python 1v1-classic/play.py --red human --blue champion      # you vs the champion
-    python 1v1-classic/play.py --red latest --blue bot --fast --games 64   # quick eval
+    python 1v1-classic/play.py --red latest --blue gen1 --fast --games 64  # quick eval, no window
 """
 
 import os

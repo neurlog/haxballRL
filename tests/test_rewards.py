@@ -86,10 +86,20 @@ def test_shot_at_own_goal_costs():
     assert kicks >= 1 and total < -0.5
 
 
-def test_full_game_of_chasing_is_worth_less_than_a_win():
-    # late-stage weights: speed 0.0005 per decision at most; a whole 3-minute game of
-    # perfect chasing (5400 decisions) must be worth less than one goal + the win bonus (4)
-    assert 0.0005 * 180 * 30 < 4.0
+def test_back_and_forth_next_to_the_ball_earns_nothing():
+    """The speed reward is signed, so it only pays for the distance actually closed:
+    total ~= (start distance - end distance) / (2 ticks x 2.4 px/tick), however long you dance."""
+    for seconds in (10, 30):
+        env = make_env(touch=0.0, speed=1.0)
+        place(env, (0, 100), (-200, 100))  # ball in play, player 200 px away
+        d0 = 200.0
+        total, _ = play(env, lambda t: (1 if (t // 10) % 2 == 0 else -1, 0, False), decisions=seconds * 30)
+        d1 = float(np.linalg.norm(env.state.ball_pos[0] - env.state.player_pos[0, 0]))
+        honest = (d0 - d1) / (2 * 2.4)
+        print(f"  back and forth near the ball for {seconds}s: speed reward {total:+.2f}, "
+              f"distance closed {d0 - d1:+.0f} px (worth {honest:+.2f})")
+        assert abs(total - honest) < 1.5, "speed reward paid more than the distance actually closed"
+        assert total < 200 / 4.8 + 1.0, "can never earn more than closing the whole gap once"
 
 
 def _kickoff_env(penalty=0.002, grace=5.0):
