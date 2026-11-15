@@ -1,0 +1,67 @@
+{
+  "name": "haxballrl",
+  "productName": "haxballRL",
+  "version": "0.1.0",
+  "description": "Play HaxBall against reinforcement-learning bots",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac dmg --arm64",
+    "dist:win": "electron-builder --win nsis --x64"
+  },
+  "dependencies": {
+    "node-haxball": "^2.3.0"
+  },
+  "build": {
+    "appId": "com.neurlog.haxballrl",
+    "productName": "haxballRL",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**",
+      "room/**",
+      "policies/**",
+      "assets/**",
+      "node_modules/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/node-datachannel/**"
+    ],
+    "mac": {
+      "category": "public.app-category.games",
+      "icon": "build/icon.icns",
+      "identity": null,
+      "target": [
+        "dmg"
+      ]
+    },
+    "dmg": {
+      "title": "haxballRL"
+    },
+    "artifactName": "${productName}-${os}-${arch}.${ext}",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "haxballRL"
+    },
+    "afterPack": "build/afterPack.js"
+  },
+  "devDependencies": {
+    "electron": "^45.3.2",
+    "electron-builder": "^26.18.0"
+  },
+  "author": "neurlog"
+}

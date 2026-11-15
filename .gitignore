@@ -5,3 +5,7 @@ headless-bot/node_modules/
 headless-bot/.env
 headless-bot/policy.json
 .DS_Store
+app/node_modules/
+app/dist/
+docs/
+kaggle/

@@ -96,6 +96,8 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     a("--hidden", type=int, default=256)
     a("--ent-hidden", type=int, default=128)
     a("--threads", type=int, default=4)
+    a("--device", default="auto", help="learner device: auto (cuda if available), cpu, cuda, cuda:0 ...")
+    a("--opp-device", default="auto", help="frozen opponents' device: auto = the 2nd GPU if there are two, else --device")
     a("--seed", type=int, default=0)
     # league
     a("--frac-champ", type=float, default=0.30)
@@ -146,12 +148,20 @@ def main(argv=None, defaults=None, mode_dir="."):
     P, D = env.P, env.obs_dim
     nm, no = env.n_mates, env.n_opps
     mkw = dict(self_dim=SELF_DIM, ent_dim=ENT_DIM, n_actions=N_ACTIONS, hidden=args.hidden, ent_hidden=args.ent_hidden)
-    model = HaxNet(**mkw)
+    cuda = torch.cuda.is_available()
+    dev = torch.device(("cuda:0" if cuda else "cpu") if args.device == "auto" else args.device)
+    if args.opp_device == "auto":
+        opp_dev = torch.device("cuda:1") if cuda and torch.cuda.device_count() > 1 else dev
+    else:
+        opp_dev = torch.device(args.opp_device)
+    model = HaxNet(**mkw).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, eps=1e-5)
     ctor = lambda: HaxNet(**mkw)  # noqa: E731
     league = League(run_dir, ctor, topk=args.pfsp_topk, explore=args.pfsp_explore, power=args.pfsp_power,
-                    max_size=args.league_size)
-    snap = lambda: {k: v.detach().clone() for k, v in model.state_dict().items()}  # noqa: E731
+                    max_size=args.league_size, device=opp_dev)
+    snap = lambda: {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}  # noqa: E731
+    print(f"devices: learner {dev}, opponents {opp_dev}" + (f" ({torch.cuda.device_count()} GPUs: "
+          + ", ".join(torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())) + ")" if cuda else ""))
 
     games, updates, rows = 0, 0, []
     champ_results = collections.deque(maxlen=200)
@@ -241,7 +251,7 @@ def main(argv=None, defaults=None, mode_dir="."):
     log_path = os.path.join(run_dir, "log.csv")
 
     def save(path):
-        torch.save(dict(model=model.state_dict(), opt=opt.state_dict(), games=games, updates=updates,
+        torch.save(dict(model=snap(), opt=opt.state_dict(), games=games, updates=updates,
                         model_kwargs=mkw, champ_results=list(champ_results),
                         env_kwargs=dict(team_size=ts, stadium=args.stadium, ping_ms=args.ping_ms,
                                         frame_skip=args.frame_skip)), path)
@@ -269,13 +279,15 @@ def main(argv=None, defaults=None, mode_dir="."):
             ent_coef = args.ent_coef + (args.ent_coef_final - args.ent_coef) * min(1.0, games / args.ent_anneal_games)
             for t in range(T):
                 o = torch.from_numpy(obs)
-                a, logp, v = model.act(o[learn_idx], nm, no)
+                o_l = o[learn_idx]
+                a, logp, v = model.act(o_l.to(dev, non_blocking=True), nm, no)
+                a, logp, v = a.cpu(), logp.cpu(), v.cpu()
                 acts = np.zeros(N * P, np.int64)
                 acts[learn_idx] = a.numpy()
                 for key, idx in groups.items():
                     net = league.champion_model() if key == "champ" else league.model(key)
-                    acts[idx] = net.act(o[idx], nm, no)[0].numpy()
-                b_obs[t], b_act[t], b_logp[t], b_val[t] = o[learn_idx], a, logp, v
+                    acts[idx] = net.act(o[idx].to(opp_dev, non_blocking=True), nm, no)[0].cpu().numpy()
+                b_obs[t], b_act[t], b_logp[t], b_val[t] = o_l, a, logp, v
                 nobs, rew, done, finished = env.step(acts.reshape(N, P))
                 obs = nobs.reshape(N * P, D)
                 b_rew[t] = rew.reshape(-1)[learn_idx]
@@ -310,7 +322,8 @@ def main(argv=None, defaults=None, mode_dir="."):
 
             # ---- GAE
             with torch.no_grad():
-                _, v_last = model(torch.from_numpy(obs)[learn_idx], nm, no)
+                _, v_last = model(torch.from_numpy(obs)[learn_idx].to(dev), nm, no)
+                v_last = v_last.cpu()
             vals = b_val.numpy()
             adv = np.zeros((T, L), np.float32)
             last = np.zeros(L, np.float32)
@@ -324,7 +337,8 @@ def main(argv=None, defaults=None, mode_dir="."):
             ret = torch.from_numpy(adv + vals).reshape(-1)
             advt = torch.from_numpy(adv).reshape(-1)
             advt = (advt - advt.mean()) / (advt.std() + 1e-8)
-            fo, fa, fl = b_obs.reshape(T * L, D), b_act.reshape(-1), b_logp.reshape(-1)
+            fo, fa, fl = b_obs.reshape(T * L, D).to(dev), b_act.reshape(-1).to(dev), b_logp.reshape(-1).to(dev)
+            ret, advt = ret.to(dev), advt.to(dev)
 
             # ---- PPO
             model.train()
@@ -333,7 +347,7 @@ def main(argv=None, defaults=None, mode_dir="."):
             kls, ents, vls = [], [], []
             stop = False
             for _ in range(args.epochs):
-                perm = torch.randperm(n)
+                perm = torch.randperm(n, device=dev)
                 for s in range(0, n - mb + 1, mb):
                     i = perm[s:s + mb]
                     lp, ent, v = model.evaluate(fo[i], fa[i], nm, no)

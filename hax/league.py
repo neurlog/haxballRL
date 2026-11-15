@@ -22,7 +22,9 @@ import random
 import torch
 
 class League:
-    def __init__(self, run_dir, model_ctor, topk=10, explore=0.1, power=2.0, max_size=60, window=60, cache_size=16):
+    def __init__(self, run_dir, model_ctor, topk=10, explore=0.1, power=2.0, max_size=60, window=60, cache_size=16,
+                 device="cpu"):
+        self.device = device
         self.dir = os.path.join(run_dir, "league")
         os.makedirs(self.dir, exist_ok=True)
         self.model_ctor = model_ctor
@@ -102,7 +104,7 @@ class League:
             return self.cache[mid]
         net = self.model_ctor()
         net.load_state_dict(self.states[mid])
-        net.eval()
+        net.to(self.device).eval()
         self.cache[mid] = net
         while len(self.cache) > self.cache_size:
             self.cache.popitem(last=False)
@@ -125,7 +127,7 @@ class League:
         if self._champion_model is None:
             net = self.model_ctor()
             net.load_state_dict(self.champion_state)
-            net.eval()
+            net.to(self.device).eval()
             self._champion_model = net
         return self._champion_model
 

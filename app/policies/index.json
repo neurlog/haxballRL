@@ -1,0 +1,34 @@
+[
+ {
+  "key": "1v1-classic",
+  "title": "1v1 Classic",
+  "team_size": 1,
+  "stadium": "Classic",
+  "goal_x": 370.0,
+  "pos_scale": [
+   0.002380952380952381,
+   0.005
+  ],
+  "dist_scale": 400.0,
+  "frame_skip": 2,
+  "time_limit_min": 3,
+  "games_trained": 50000,
+  "blurb": "Champion after 50,000 games of self-play. You vs the bot on the Classic map."
+ },
+ {
+  "key": "3v3-big",
+  "title": "3v3 Big",
+  "team_size": 3,
+  "stadium": "Big",
+  "goal_x": 550.0,
+  "pos_scale": [
+   0.0016666666666666668,
+   0.003703703703703704
+  ],
+  "dist_scale": 571.4285714285714,
+  "frame_skip": 2,
+  "time_limit_min": 3,
+  "games_trained": 5000,
+  "blurb": "Champion after 5,000 games. 3 bots vs your team on the Big map; empty spots on your team are filled with bots."
+ }
+]
