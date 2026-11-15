@@ -1,6 +1,17 @@
 # 1v1 Classic
 
-All 1v1 work on the Classic map lives here. Runs are saved to `1v1-classic/runs/<name>/`:
+All 1v1 work on the Classic map lives here.
+
+`models/champion_50k.pt` is the trained champion after 50,000 games (gen 12). It's in
+git so anyone who clones the repo can play it, use it in the real-game bot
+(`headless-bot/`), or start 3v3 from it:
+
+```bash
+python 1v1-classic/play.py --red human --blue 1v1-classic/models/champion_50k.pt
+python headless-bot/export_policy.py 1v1-classic/models/champion_50k.pt
+```
+
+Training runs are saved to `1v1-classic/runs/<name>/` (not uploaded to git):
 
 ```
 runs/<name>/

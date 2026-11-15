@@ -71,6 +71,13 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     a("--reward-stage-games", type=float, default=3000)
     a("--kickoff-penalty", type=float, default=0.002, help="per decision while your own kickoff waits past the grace time")
     a("--kickoff-grace", type=float, default=5.0, help="seconds of free waiting at your own kickoff")
+    # team play (team games only; no effect in 1v1). See hax/env.py for the exploit guards.
+    a("--pass-reward", type=float, default=0.0, help="zero-sum reward for a forward pass >= --pass-min-dist")
+    a("--pass-min-dist", type=float, default=100.0)
+    a("--crowd-penalty", type=float, default=0.0, help="per decision, per teammate closer than --crowd-dist")
+    a("--crowd-dist", type=float, default=80.0)
+    a("--team-spirit-early", type=float, default=0.0, help="blend of own vs team-average individual rewards")
+    a("--team-spirit-late", type=float, default=0.0)
     # ppo
     a("--n-envs", type=int, default=192)
     a("--rollout", type=int, default=192, help="decisions per env per update (~50k samples, as RLGym-PPO)")
@@ -217,7 +224,8 @@ def main(argv=None, defaults=None, mode_dir="."):
 
     obs = env.reset().reshape(N * P, D)
     st = dict(champ=champ_results, league=collections.deque(maxlen=300),
-              goals=collections.deque(maxlen=300), contact=collections.deque(maxlen=300), len=collections.deque(maxlen=300))
+              goals=collections.deque(maxlen=300), contact=collections.deque(maxlen=300), len=collections.deque(maxlen=300),
+              passes=collections.deque(maxlen=300))
     last_view = games // args.view_every
     last_promo = games // args.promote_every
     last_snap = games // args.snapshot_every_games
@@ -250,6 +258,9 @@ def main(argv=None, defaults=None, mode_dir="."):
             lerp = lambda a, b: a + (b - a) * stage  # noqa: E731
             env.set_reward_weights(lerp(args.speed_early, args.speed_late), lerp(args.touch_early, args.touch_late),
                                    lerp(args.btg_early, args.btg_late))
+            env.set_team_rewards(args.pass_reward, args.crowd_penalty,
+                                 lerp(args.team_spirit_early, args.team_spirit_late),
+                                 args.pass_min_dist, args.crowd_dist)
             ent_coef = args.ent_coef + (args.ent_coef_final - args.ent_coef) * min(1.0, games / args.ent_anneal_games)
             for t in range(T):
                 o = torch.from_numpy(obs)
@@ -265,12 +276,13 @@ def main(argv=None, defaults=None, mode_dir="."):
                 b_rew[t] = rew.reshape(-1)[learn_idx]
                 b_done[t] = np.repeat(done, P)[learn_idx]
                 regroup = False
-                for (e, rg, bg, ticks, rc, bc) in finished:
+                for (e, rg, bg, ticks, rc, bc, npass) in finished:
                     games += 1
                     mode = env_mode[e]
                     if mode == 0:
                         st["goals"].append(rg + bg)
-                        st["contact"].append((rc + bc) / 2 / 60.0)
+                        st["contact"].append((rc + bc) / env.P / 60.0)
+                        st["passes"].append(npass)
                         st["len"].append(ticks / 60.0)
                     else:
                         mine, theirs = (rg, bg) if learner_red[e] else (bg, rg)
@@ -379,7 +391,7 @@ def main(argv=None, defaults=None, mode_dir="."):
                 sps_t, sps_n = now, 0
                 row = dict(games=games, updates=updates, sps=sps, champion_gen=league.champion_gen,
                            win_champ=fmean(champ_results), win_league=fmean(st["league"]),
-                           goals_per_game=fmean(st["goals"]), contact_s=fmean(st["contact"]),
+                           goals_per_game=fmean(st["goals"]), contact_s=fmean(st["contact"]), passes_per_game=fmean(st["passes"]),
                            game_len_s=fmean(st["len"]), entropy=fmean(ent_hist[-args.log_every:]),
                            value_loss=fmean(vl_hist[-args.log_every:]), approx_kl=fmean(kl_hist[-args.log_every:]),
                            reward_stage=stage, minutes=(now - t0) / 60)
@@ -392,7 +404,8 @@ def main(argv=None, defaults=None, mode_dir="."):
                     w.writerow(row)
                 print(f"games {games:7d} | upd {updates:6d} | {sps / 1000:5.1f}k sps | gen {league.champion_gen:3d} | "
                       f"win champ {row['win_champ']:.2f} league {row['win_league']:.2f} | "
-                      f"goals/g {row['goals_per_game']:5.2f} contact {row['contact_s']:5.1f}s/g | "
+                      f"goals/g {row['goals_per_game']:5.2f} contact {row['contact_s']:5.1f}s/g"
+                      + (f" passes/g {row['passes_per_game']:4.1f}" if args.pass_reward else "") + " | "
                       f"ent {row['entropy']:.2f} vl {row['value_loss']:.4f} kl {row['approx_kl']:.4f}", flush=True)
 
             if games // args.view_every > last_view:

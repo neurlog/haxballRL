@@ -27,10 +27,22 @@ HaxballGym (`haxball_core`) gives us the real engine: physics, kickoff barriers,
       Kicking the ball into a wall and having it bounce back sums to about zero, so
       pinning the ball in a corner and spamming kick earns nothing
       (tests/test_rewards.py checks this),
+    - ball velocity towards the goal you attack (VelocityBallToGoalReward).
+    The velocity-to-ball term goes only to the player on each team nearest the ball
+    (identical to before in 1v1), so in team games they don't all chase it in a swarm.
   * kickoff dawdling: once your own kickoff has waited `kickoff_grace_s` (5 s), the kicking
     team loses `kickoff_penalty` per decision until the ball moves (the clock is stopped
     during kickoffs, so without this waiting is free and agents learn to stall),
-    - ball velocity towards the goal you attack (VelocityBallToGoalReward).
+  * team play (all off by default, used for 3v3), set by `set_team_rewards`:
+    - pass: a teammate's touch followed by another teammate's touch, no opponent touch in
+      between. Paid only if the ball travelled >= `pass_min_dist` (scaled up to 1 at 300 px)
+      AND ended closer to the opponent goal than the passer's last touch. Zero-sum (the
+      opponents lose it), with a 1 s cooldown per team. Corner ping-pong (short) and
+      endless back-and-forth (one direction is always backwards) earn nothing,
+    - crowding: each pair of teammates closer than `crowd_dist` costs both
+      `crowd_penalty` x (1 - d / crowd_dist) per decision,
+    - team spirit (RLGym): individual dense terms (velocity to ball, touch, crowding) are
+      blended with the team average: r = (1 - tau) r_self + tau mean_team(r).
 
 Actions are one of 18 joint actions: 9 move directions x kick on/off.
 """
@@ -108,6 +120,8 @@ class HaxEnv:
         self.ko_penalty = kickoff_penalty / frame_skip  # per tick, so `kickoff_penalty` per decision
         self.ko_grace = int(kickoff_grace_s * TICKS_PER_S)
         self.w_speed = self.w_touch = self.w_btg = 0.0
+        self.w_pass = self.w_crowd = self.team_spirit = 0.0
+        self.pass_min_dist, self.crowd_dist = 100.0, 80.0
 
         self.team = self.engine._teams.copy()  # (N, P)
         self.sx = np.where(self.team == RED, 1.0, -1.0)  # x-mirror per agent
@@ -148,6 +162,10 @@ class HaxEnv:
         self.last_apply = np.zeros((n, P), np.int64)
         self.applied = np.zeros((n, P, 3), np.int64)
         self.last_act = np.zeros((n, P, 2), np.int64)
+        self.last_toucher = np.full(n, -1, np.int64)  # for pass detection
+        self.last_touch_pos = np.zeros((n, 2))
+        self.pass_cool = np.zeros((n, 2), np.int64)  # per team (red, blue), ticks
+        self.passes = np.zeros((n, 2), np.int64)  # rewarded passes this game, per team
         self.slot = 0
         self.state = self.engine.snapshot()
         return self.observe()
@@ -165,15 +183,23 @@ class HaxEnv:
         self.applied[mask] = 0
         self.last_apply[mask] = self.t
         self.last_act[mask] = 0
+        self.last_toucher[mask] = -1
+        self.pass_cool[mask] = 0
+        self.passes[mask] = 0
 
     def set_reward_weights(self, speed: float = 0.0, touch: float = 0.0, ball_to_goal: float = 0.0):
         self.w_speed, self.w_touch, self.w_btg = speed, touch, ball_to_goal
+
+    def set_team_rewards(self, pass_reward: float = 0.0, crowd_penalty: float = 0.0, team_spirit: float = 0.0,
+                         pass_min_dist: float = 100.0, crowd_dist: float = 80.0):
+        self.w_pass, self.w_crowd, self.team_spirit = pass_reward, crowd_penalty, team_spirit
+        self.pass_min_dist, self.crowd_dist = pass_min_dist, crowd_dist
 
     # ------------------------------------------------------------------ step
     def step(self, actions: np.ndarray):
         """actions (N, P) joint actions in each agent's mirrored frame.
         Returns obs (N,P,D), rewards (N,P), done (N,), finished games
-        [(env, red_goals, blue_goals, total_ticks, red_touches, blue_touches)]."""
+        [(env, red_goals, blue_goals, total_ticks, red_touches, blue_touches, rewarded_passes)]."""
         n, P = self.n, self.P
         actions = np.asarray(actions, np.int64).reshape(n, P)
         keys = action_to_keys(actions)
@@ -190,7 +216,8 @@ class HaxEnv:
         self.pend_a[:, :, s] = keys
         self.last_act = np.stack([actions, self.last_act[..., 0]], -1)
 
-        rew = np.zeros((n, P), np.float32)
+        rew = np.zeros((n, P), np.float32)  # team-level terms
+        indiv = np.zeros((n, P), np.float64)  # individual terms, blended by team spirit
         touch = np.zeros((n, P), np.float64)
         done = np.zeros(n, bool)
         ended_goal = np.zeros(n, bool)
@@ -243,19 +270,23 @@ class HaxEnv:
                 rew[gi] += self.goal_reward * sign
                 self.celeb[g] = 150
                 self.kicking[g] = conc[g]
+                self.last_toucher[g] = -1
                 # golden goal: a goal in overtime ends the game straight away
                 ended_goal |= g & (self.play_ticks >= self.time_limit)
             dist0 = np.linalg.norm(st0.ball_pos[:, None] - st0.player_pos, axis=-1)
             dist = np.linalg.norm(st.ball_pos[:, None] - st.player_pos, axis=-1)
             self.touches += dist < 26.5
+            if self.w_touch or self.w_pass:
+                # velocity change the ball got this tick beyond its normal damping (0.99/tick)
+                dv = st.ball_vel - 0.99 * st0.ball_vel  # (N,2)
+                contact = (np.minimum(dist0, dist) < 30.0) & ((self.celeb == 0) & ~stalled & ~g)[:, None]
             if self.w_touch:
-                # velocity change the ball got this tick beyond its normal damping (0.99/tick),
                 # projected on the direction to the goal each player attacks, credited WITH SIGN
                 # to the players in contact (before or after the tick). Kick + wall rebound ~ 0.
-                dv = st.ball_vel - 0.99 * st0.ball_vel  # (N,2)
                 gain = (self._goal_dir(st0.ball_pos) * dv[:, None]).sum(-1) / 5.0  # (N,P)
-                contact = (np.minimum(dist0, dist) < 30.0) & ((self.celeb == 0) & ~stalled & ~g)[:, None]
                 touch += np.where(contact, gain, 0.0)
+            if self.w_pass:
+                rew += self._passes(st, dist0, contact, np.linalg.norm(dv, axis=-1), done)
             done |= ended_goal
             over = self.play_ticks >= self.time_limit
             level = self.score[:, 0] == self.score[:, 1]
@@ -264,9 +295,18 @@ class HaxEnv:
             done |= self.total_ticks >= self.max_total
 
         if self.w_speed or self.w_btg:
-            rew += self._dense(self.state)
+            speed_r, btg_r = self._dense(self.state)
+            indiv += speed_r
+            rew += btg_r
         if self.w_touch:
-            rew += (self.w_touch * np.clip(touch, -1.0, 1.0)).astype(np.float32)
+            indiv += self.w_touch * np.clip(touch, -1.0, 1.0)
+        if self.w_crowd and self.ts > 1:
+            indiv -= self._crowding(self.state)
+        if self.team_spirit and self.ts > 1:
+            team_mean = indiv.reshape(n, 2, self.ts).mean(-1, keepdims=True)  # red players first, then blue
+            team_mean = np.broadcast_to(team_mean, (n, 2, self.ts)).reshape(n, P)
+            indiv = (1.0 - self.team_spirit) * indiv + self.team_spirit * team_mean
+        rew += indiv.astype(np.float32)
 
         finished = []
         if done.any():
@@ -278,22 +318,60 @@ class HaxEnv:
             tch = self.touches[idx]
             for j, e in enumerate(idx):
                 finished.append((int(e), int(self.score[e, 0]), int(self.score[e, 1]), int(self.total_ticks[e]),
-                                 int(tch[j][self.team[e] == RED].sum()), int(tch[j][self.team[e] == BLUE].sum())))
+                                 int(tch[j][self.team[e] == RED].sum()), int(tch[j][self.team[e] == BLUE].sum()),
+                                 int(self.passes[e].sum())))
             self._reset_envs(done)
             self.state = self.engine.snapshot()
         return self.observe(), rew, done, finished
 
-    def _dense(self, st) -> np.ndarray:
+    def _dense(self, st):
         """Per-decision dense rewards (only while the ball is live), each in [-1, 1]:
-        * velocity towards the ball, signed (non-zero-sum; keeps both players engaged,
-          which is what stops the 'nobody touches the ball' collapse),
-        * ball velocity towards the goal you attack (zero-sum-ish)."""
+        * velocity towards the ball, signed, for the player on each team nearest the ball
+          (non-zero-sum; keeps both teams engaged, which is what stops the 'nobody touches
+          the ball' collapse) -> individual,
+        * ball velocity towards the goal you attack (zero-sum-ish) -> team-level."""
         live = (self.celeb == 0)[:, None]
         pb = st.ball_pos[:, None] - st.player_pos
-        pbn = pb / np.maximum(np.linalg.norm(pb, axis=-1, keepdims=True), 1e-9)
+        d = np.linalg.norm(pb, axis=-1)
+        pbn = pb / np.maximum(d, 1e-9)[..., None]
         speed = np.clip((pbn * st.player_vel).sum(-1) / PLAYER_TOP_SPEED, -1.0, 1.0)
+        dt = d.reshape(-1, 2, self.ts)  # red players first, then blue
+        nearest = (dt == dt.min(-1, keepdims=True)).reshape(d.shape)
         btg = np.clip((self._goal_dir(st.ball_pos) * st.ball_vel[:, None]).sum(-1) / BALL_SPEED_REF, -1.0, 1.0)
-        return np.where(live, self.w_speed * speed + self.w_btg * btg, 0.0).astype(np.float32)
+        return (np.where(live & nearest, self.w_speed * speed, 0.0),
+                np.where(live, self.w_btg * btg, 0.0).astype(np.float32))
+
+    def _crowding(self, st) -> np.ndarray:
+        """(N,P) penalty: sum over teammates closer than crowd_dist of w_crowd * (1 - d / crowd_dist)."""
+        pp = st.player_pos.reshape(-1, 2, self.ts, 2)
+        d = np.linalg.norm(pp[:, :, :, None] - pp[:, :, None], axis=-1)  # (N,2,ts,ts)
+        close = np.clip(1.0 - d / self.crowd_dist, 0.0, 1.0)
+        close[..., np.arange(self.ts), np.arange(self.ts)] = 0.0
+        live = (self.celeb == 0)[:, None, None]
+        return np.where(live, self.w_crowd * close.sum(-1), 0.0).reshape(-1, self.P)
+
+    def _passes(self, st, dist0, contact, dv_norm, done) -> np.ndarray:
+        """Detect completed passes on this tick and return the (N,P) zero-sum pass reward."""
+        out = np.zeros((self.n, self.P), np.float32)
+        self.pass_cool = np.maximum(self.pass_cool - 1, 0)
+        hit = contact & (dv_norm > 0.3)[:, None]  # a touch that actually changed the ball's motion
+        envs = np.where(hit.any(-1) & ~done)[0]
+        for e in envs:
+            j = int(np.argmin(np.where(hit[e], dist0[e], np.inf)))  # nearest player in contact
+            i = int(self.last_toucher[e])
+            team_j = 0 if self.team[e, j] == RED else 1
+            if i >= 0 and i != j and self.team[e, i] == self.team[e, j] and self.pass_cool[e, team_j] == 0:
+                delta = st.ball_pos[e] - self.last_touch_pos[e]
+                length = float(np.hypot(*delta))
+                forward = delta[0] * (1.0 if team_j == 0 else -1.0)
+                if length >= self.pass_min_dist and forward >= 0.0:
+                    r = self.w_pass * min(length / 300.0, 1.0)
+                    out[e] = np.where(self.team[e] == self.team[e, j], r, -r)
+                    self.pass_cool[e, team_j] = TICKS_PER_S
+                    self.passes[e, team_j] += 1
+            self.last_toucher[e] = j
+            self.last_touch_pos[e] = st.ball_pos[e]
+        return out
 
     def _goal_dir(self, ball_pos: np.ndarray) -> np.ndarray:
         """(N,2) ball positions -> (N,P,2) unit vectors from the ball to the nearest point of
