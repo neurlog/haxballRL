@@ -40,7 +40,7 @@ minutes per 1000 games.
 |---|---|---|
 | pass (`--pass-reward 0.1`) | One teammate's touch, then another teammate's touch, with no opponent touch in between. Pays 0.1 x min(distance / 300 px, 1) to the whole team; the opponents lose the same. | Only counts if the ball travelled at least 100 px (`--pass-min-dist`) **and** moved towards the opponent goal. 1 s cooldown per team. Corner ping-pong is too short, and back-and-forth always has a backwards leg. |
 | chase and touch | The velocity-towards-the-ball and touch rewards go only to the player on each team nearest the ball. | Stops all three swarming the ball: a scrum of teammates earns one player's reward, not three. |
-| crowding (`--crowd-penalty 0.01`) | Each pair of teammates closer than 80 px (`--crowd-dist`) costs both up to 0.01 per decision, level with the early chase reward. | It only penalises bunching. It never rewards distance, because HaxballGym found that rewarding spacing made bots spread out and stop playing. |
+| crowding (`--crowd-penalty 0.01`) | Each pair of teammates closer than 40 px (`--crowd-dist`; players are 30 px wide, so only near-touching) costs both up to 0.01 per decision. | It only penalises bunching. It never rewards distance, because HaxballGym found that rewarding spacing made bots spread out and stop playing. |
 | team spirit (`--team-spirit-early 0.1 --team-spirit-late 0.8`) | Individual rewards (chase, touch, crowding) are blended with the team average, rising over the first 3000 games (as in RLGym). | Players learn to value a teammate's touch like their own. |
 
 There is no hand-coded goalkeeper. Roles such as one player staying back are left to emerge

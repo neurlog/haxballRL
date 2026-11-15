@@ -23,7 +23,7 @@ DEFAULTS = dict(
     pass_reward=0.1,
     pass_min_dist=100.0,
     crowd_penalty=0.01,  # level with the early chase reward, so bunching is actually felt
-    crowd_dist=80.0,
+    crowd_dist=40.0,  # players are 30 px wide: only near-touching counts as crowding
     team_spirit_early=0.1,  # RLGym: start low, or followers get paid for trailing the chaser
     team_spirit_late=0.8,
 )

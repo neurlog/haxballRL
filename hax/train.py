@@ -6,7 +6,8 @@ Each env slot has a fixed role, so the number of learner agents never changes:
     champ   learner vs the frozen champion (supplies the promotion statistics)
     league  learner vs a PFSP-sampled league member (resampled every game)
 
-Default mix: 45% self-play, 30% champion, 25% league.
+Default mix: 40% self-play, 30% champion, 25% league, 5% lazy opponents (training-only:
+statue / runaway / wander, see hax/lazy.py; never logged).
 
 The learner swaps colour every game. Every `promote_every` games the learner is promoted
 to champion if it beat the champion >= 75% over >= 60 games and averages >= 50% against
@@ -32,10 +33,25 @@ import torch
 import torch.nn as nn
 
 from .env import ENT_DIM, N_ACTIONS, SELF_DIM, HaxEnv
+from .lazy import LazyOpponents
 from .league import League
 from .model import HaxNet, load_policy
 
 MODES = ("self", "champ", "league")
+
+
+def reward_weights(args, games):
+    """Dense reward weights at this point in training: (speed, touch, ball_to_goal, team_spirit, stage, fade).
+    * 0 -> reward_stage_games: everything moves linearly from its 'early' to its 'late' value;
+    * push_fade_start -> + push_fade_games: touch and ball-to-goal fade linearly to zero (they reward pushing
+      the ball forward, not controlling it). Velocity-to-ball stays: it's what stops the passive collapse."""
+    stage = min(1.0, games / args.reward_stage_games) if args.reward_stage_games > 0 else 1.0
+    lerp = lambda a, b: a + (b - a) * stage  # noqa: E731
+    fade = 1.0
+    if args.push_fade_games > 0:
+        fade = min(1.0, max(0.0, 1.0 - (games - args.push_fade_start) / args.push_fade_games))
+    return (lerp(args.speed_early, args.speed_late), lerp(args.touch_early, args.touch_late) * fade,
+            lerp(args.btg_early, args.btg_late) * fade, lerp(args.team_spirit_early, args.team_spirit_late), stage, fade)
 
 
 def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
@@ -69,13 +85,16 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     a("--btg-early", type=float, default=0.01, help="ball velocity towards the goal you attack")
     a("--btg-late", type=float, default=0.01)
     a("--reward-stage-games", type=float, default=3000)
+    a("--push-fade-start", type=float, default=10000, help="games after which the touch and ball-to-goal rewards "
+      "start fading to zero, so goals and wins decide everything")
+    a("--push-fade-games", type=float, default=10000, help="games the fade takes (0 = no fade)")
     a("--kickoff-penalty", type=float, default=0.002, help="per decision while your own kickoff waits past the grace time")
     a("--kickoff-grace", type=float, default=5.0, help="seconds of free waiting at your own kickoff")
     # team play (team games only; no effect in 1v1). See hax/env.py for the exploit guards.
     a("--pass-reward", type=float, default=0.0, help="zero-sum reward for a forward pass >= --pass-min-dist")
     a("--pass-min-dist", type=float, default=100.0)
     a("--crowd-penalty", type=float, default=0.0, help="per decision, per teammate closer than --crowd-dist")
-    a("--crowd-dist", type=float, default=80.0)
+    a("--crowd-dist", type=float, default=40.0, help="teammates closer than this (px) count as crowding")
     a("--team-spirit-early", type=float, default=0.0, help="blend of own vs team-average individual rewards")
     a("--team-spirit-late", type=float, default=0.0)
     # ppo
@@ -102,6 +121,8 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     # league
     a("--frac-champ", type=float, default=0.30)
     a("--frac-league", type=float, default=0.25)
+    a("--frac-lazy", type=float, default=0.05, help="training-only lazy opponents (statue / runaway / wander), "
+      "taken from the self-play share; never logged")
     a("--promote-every", type=int, default=500)
     a("--promote-threshold", type=float, default=0.75)
     a("--promote-min-games", type=int, default=60)
@@ -118,6 +139,8 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     a("--no-view", action="store_true")
     a("--log-every", type=int, default=10)
     a("--ckpt-every-games", type=int, default=1000)
+    a("--max-minutes", type=float, default=0, help="stop cleanly (and save) after this long; 0 = no limit. "
+      "Use it on Kaggle so a session ends before the 12 h limit")
     if defaults:
         p.set_defaults(**defaults)
     return p
@@ -192,8 +215,12 @@ def main(argv=None, defaults=None, mode_dir="."):
     # ---- env slot roles (fixed), learner colour flips every game
     n_champ = int(round(N * args.frac_champ))
     n_league = int(round(N * args.frac_league))
-    n_self = N - n_champ - n_league
-    env_mode = np.array([0] * n_self + [1] * n_champ + [2] * n_league)
+    n_lazy = int(round(N * args.frac_lazy))
+    n_self = N - n_champ - n_league - n_lazy
+    env_mode = np.array([0] * n_self + [1] * n_champ + [2] * n_league + [3] * n_lazy)
+    lazy = LazyOpponents(env, np.random.default_rng(args.seed + 1))
+    for e in np.where(env_mode == 3)[0]:
+        lazy.reset_env(e)
     learner_red = np.array([e % 2 == 0 for e in range(N)])
     env_opp = [league.sample() if env_mode[e] == 2 else None for e in range(N)]
     env_gen = np.full(N, league.champion_gen)
@@ -212,7 +239,7 @@ def main(argv=None, defaults=None, mode_dir="."):
     def opponent_groups():
         groups = collections.defaultdict(list)
         for e in range(N):
-            if env_mode[e] == 0:
+            if env_mode[e] in (0, 3):  # self-play, or lazy (scripted, handled separately)
                 continue
             base = ts if learner_red[e] else 0
             if env_mode[e] == 1:
@@ -222,12 +249,22 @@ def main(argv=None, defaults=None, mode_dir="."):
             groups[key] += [e * P + base + k for k in range(ts)]
         return {k: np.array(v) for k, v in groups.items()}
 
+    def lazy_agents():
+        """(env indices, agent indices) of the lazy opponents."""
+        envs, agents = [], []
+        for e in np.where(env_mode == 3)[0]:
+            base = ts if learner_red[e] else 0
+            envs += [e] * ts
+            agents += [base + k for k in range(ts)]
+        return np.array(envs, np.int64), np.array(agents, np.int64)
+
     learn_idx = learner_agents()
+    lazy_envs, lazy_ags = lazy_agents()
     groups = opponent_groups()
     L = len(learn_idx)
     T = args.rollout
     print(f"{ts}v{ts} on {args.stadium}: {N} games in parallel ({n_self} self-play, {n_champ} vs champion, "
-          f"{n_league} vs league), {L} learner agents, ping {args.ping_ms:.0f}ms, "
+          f"{n_league} vs league, {n_lazy} vs lazy opponents), {L} learner agents, ping {args.ping_ms:.0f}ms, "
           f"{60 // args.frame_skip} decisions/s -> {run_dir}")
 
     b_obs = torch.zeros(T, L, D)
@@ -269,13 +306,9 @@ def main(argv=None, defaults=None, mode_dir="."):
 
     try:
         while games < args.total_games:
-            stage = min(1.0, games / args.reward_stage_games) if args.reward_stage_games > 0 else 1.0
-            lerp = lambda a, b: a + (b - a) * stage  # noqa: E731
-            env.set_reward_weights(lerp(args.speed_early, args.speed_late), lerp(args.touch_early, args.touch_late),
-                                   lerp(args.btg_early, args.btg_late))
-            env.set_team_rewards(args.pass_reward, args.crowd_penalty,
-                                 lerp(args.team_spirit_early, args.team_spirit_late),
-                                 args.pass_min_dist, args.crowd_dist)
+            w_speed, w_touch, w_btg, spirit, stage, fade = reward_weights(args, games)
+            env.set_reward_weights(w_speed, w_touch, w_btg)
+            env.set_team_rewards(args.pass_reward, args.crowd_penalty, spirit, args.pass_min_dist, args.crowd_dist)
             ent_coef = args.ent_coef + (args.ent_coef_final - args.ent_coef) * min(1.0, games / args.ent_anneal_games)
             for t in range(T):
                 o = torch.from_numpy(obs)
@@ -287,6 +320,8 @@ def main(argv=None, defaults=None, mode_dir="."):
                 for key, idx in groups.items():
                     net = league.champion_model() if key == "champ" else league.model(key)
                     acts[idx] = net.act(o[idx].to(opp_dev, non_blocking=True), nm, no)[0].cpu().numpy()
+                if len(lazy_envs):
+                    acts[lazy_envs * P + lazy_ags] = lazy.actions(lazy_envs, lazy_ags)
                 b_obs[t], b_act[t], b_logp[t], b_val[t] = o_l, a, logp, v
                 nobs, rew, done, finished = env.step(acts.reshape(N, P))
                 obs = nobs.reshape(N * P, D)
@@ -301,6 +336,10 @@ def main(argv=None, defaults=None, mode_dir="."):
                         st["contact"].append((rc + bc) / env.P / 60.0)
                         st["passes"].append(npass)
                         st["len"].append(ticks / 60.0)
+                    elif mode == 3:  # lazy opponent: training only, nothing to record
+                        lazy.reset_env(e)
+                        learner_red[e] = not learner_red[e]
+                        regroup = True
                     else:
                         mine, theirs = (rg, bg) if learner_red[e] else (bg, rg)
                         res = 1.0 if mine > theirs else (0.5 if mine == theirs else 0.0)
@@ -318,6 +357,7 @@ def main(argv=None, defaults=None, mode_dir="."):
                 if regroup:
                     learn_idx = learner_agents()
                     groups = opponent_groups()
+                    lazy_envs, lazy_ags = lazy_agents()
             sps_n += T * L
 
             # ---- GAE
@@ -413,7 +453,7 @@ def main(argv=None, defaults=None, mode_dir="."):
                            goals_per_game=fmean(st["goals"]), contact_s=fmean(st["contact"]), passes_per_game=fmean(st["passes"]),
                            game_len_s=fmean(st["len"]), entropy=fmean(ent_hist[-args.log_every:]),
                            value_loss=fmean(vl_hist[-args.log_every:]), approx_kl=fmean(kl_hist[-args.log_every:]),
-                           reward_stage=stage, minutes=(now - t0) / 60)
+                           reward_stage=stage, push_reward_fade=fade, minutes=(now - t0) / 60)
                 rows.append(row)
                 new = not os.path.exists(log_path)
                 with open(log_path, "a", newline="") as f:
@@ -427,6 +467,9 @@ def main(argv=None, defaults=None, mode_dir="."):
                       + (f" passes/g {row['passes_per_game']:4.1f}" if args.pass_reward else "") + " | "
                       f"ent {row['entropy']:.2f} vl {row['value_loss']:.4f} kl {row['approx_kl']:.4f}", flush=True)
 
+            if args.max_minutes and (time.time() - t0) / 60 >= args.max_minutes:
+                print(f"--- time limit of {args.max_minutes:g} min reached at {games} games, stopping", flush=True)
+                break
             if games // args.view_every > last_view:
                 last_view = games // args.view_every
                 launch_viewer()

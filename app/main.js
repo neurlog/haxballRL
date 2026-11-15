@@ -118,7 +118,9 @@ if (process.env.HAXBALLRL_HOSTTEST) {
     setTimeout(() => { p.kill(); app.quit(); }, 12000);
   });
 } else app.whenReady().then(() => {
-  if (process.platform === "darwin" && app.dock) app.dock.setIcon(path.join(__dirname, "assets", "icon.png"));
+  // in the packaged app macOS uses the bundle's icon.icns (shaped by macOS); only override it when
+  // running from source, where the Dock would otherwise show Electron's icon
+  if (process.platform === "darwin" && app.dock && !app.isPackaged) app.dock.setIcon(path.join(__dirname, "assets", "icon.png"));
   createWindow();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });

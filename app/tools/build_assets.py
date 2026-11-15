@@ -60,12 +60,12 @@ def build_icon(size=1024):
     import pygame
     pygame.init()
     s = pygame.Surface((size, size), pygame.SRCALPHA)
-    c, r = size // 2, int(size * 0.47)
+    c, r = size // 2, int(size * 0.497)  # as large as the canvas allows (was 0.47)
     pygame.draw.circle(s, (0, 0, 0, 255), (c, c), r)                       # black outline
     pygame.draw.circle(s, (229, 110, 86, 255), (c, c), int(r * 0.92))      # HaxBall red (#E56E56)
     font_path = "/System/Library/Fonts/Supplemental/Arial Black.ttf"
-    font = pygame.font.Font(font_path, int(size * 0.40)) if os.path.exists(font_path) else \
-        pygame.font.SysFont("arialblack,arial", int(size * 0.40), bold=True)
+    font = pygame.font.Font(font_path, int(size * 0.425)) if os.path.exists(font_path) else \
+        pygame.font.SysFont("arialblack,arial", int(size * 0.425), bold=True)
     txt = font.render("RL", True, (255, 255, 255))
     shadow = font.render("RL", True, (0, 0, 0))
     x, y = c - txt.get_width() // 2, c - txt.get_height() // 2
@@ -73,7 +73,25 @@ def build_icon(size=1024):
     s.blit(shadow, (x + off, y + off))
     s.blit(txt, (x, y))
     pygame.image.save(s, os.path.join(APP, "assets", "icon.png"))
-    print("icon", size)
+    pygame.image.save(s, os.path.join(APP, "build", "icon.png"))  # Windows icon: the round player, no background
+    _make_icns(os.path.join(APP, "assets", "icon.png"), os.path.join(APP, "build", "icon.icns"))  # macOS icon
+    print("icon", size, "(+ macOS icon.icns, Windows icon.png)")
+
+
+def _make_icns(png, out):
+    """1024px PNG -> .icns with all the sizes macOS wants (needs macOS's sips + iconutil)."""
+    import shutil
+    import subprocess
+    import tempfile
+    d = os.path.join(tempfile.mkdtemp(), "icon.iconset")
+    os.makedirs(d)
+    for px in (16, 32, 128, 256, 512):
+        for scale in (1, 2):
+            name = f"icon_{px}x{px}{'@2x' if scale == 2 else ''}.png"
+            subprocess.run(["sips", "-z", str(px * scale), str(px * scale), png, "--out", os.path.join(d, name)],
+                           check=True, capture_output=True)
+    subprocess.run(["iconutil", "-c", "icns", d, "-o", out], check=True)
+    shutil.rmtree(os.path.dirname(d))
 
 
 def record_kickoff_loop(min_s=14, max_s=30, fps=30, seed=3):

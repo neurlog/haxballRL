@@ -135,7 +135,7 @@ class HaxEnv:
         self.ko_grace = int(kickoff_grace_s * TICKS_PER_S)
         self.w_speed = self.w_touch = self.w_btg = 0.0
         self.w_pass = self.w_crowd = self.team_spirit = 0.0
-        self.pass_min_dist, self.crowd_dist = 100.0, 80.0
+        self.pass_min_dist, self.crowd_dist = 100.0, 40.0
 
         self.team = self.engine._teams.copy()  # (N, P)
         self.sx = np.where(self.team == RED, 1.0, -1.0)  # x-mirror per agent
@@ -205,7 +205,7 @@ class HaxEnv:
         self.w_speed, self.w_touch, self.w_btg = speed, touch, ball_to_goal
 
     def set_team_rewards(self, pass_reward: float = 0.0, crowd_penalty: float = 0.0, team_spirit: float = 0.0,
-                         pass_min_dist: float = 100.0, crowd_dist: float = 80.0):
+                         pass_min_dist: float = 100.0, crowd_dist: float = 40.0):
         self.w_pass, self.w_crowd, self.team_spirit = pass_reward, crowd_penalty, team_spirit
         self.pass_min_dist, self.crowd_dist = pass_min_dist, crowd_dist
 
