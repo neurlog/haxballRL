@@ -63,3 +63,4 @@ button { font: inherit; border: none; border-radius: 10px; cursor: pointer; }
 .cmd.danger { color: #c0392b; border-color: #efb8ae; }
 .cmd.danger:hover { background: var(--red-soft); border-color: #c0392b; }
 .secondary:disabled { opacity: .4; cursor: default; border-color: var(--line); }
+.notice { margin: -2px 0 10px; color: var(--muted); font-size: 13px; }

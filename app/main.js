@@ -31,9 +31,11 @@ function createWindow() {
       selected: "document.querySelector('.mode:nth-child(2)').click();",
       settings: "document.querySelector('.mode:nth-child(2)').click(); document.getElementById('play').click();",
       live: "document.querySelector('.mode:nth-child(1)').click(); document.getElementById('play').click(); show('live');",
+      closed: "document.querySelector('.mode:nth-child(1)').click(); document.getElementById('play').click(); show('live');",
     }[step];
     win.webContents.once("did-finish-load", () => setTimeout(async () => {
       await win.webContents.executeJavaScript(js);
+      if (step === "closed") toWindow({ type: "closed", reason: "nobody joined within 60 s" });
       if (step === "live") {
         toWindow({ type: "link", link: "https://www.haxball.com/play?c=AbCdEfGhIjK", password: "bot" });
         toWindow({ type: "bots", count: 1, max: 2 });

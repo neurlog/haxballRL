@@ -13,9 +13,16 @@ function show(step) {
   $("play").hidden = step !== "pick";
   $("back").hidden = $("create").hidden = step !== "settings";
   $("closeRoom").hidden = step !== "live";
-  $("back2").hidden = true;
 }
-function showBackOnly() { $("closeRoom").hidden = true; $("back2").hidden = false; }
+// the room ended on its own (timeout, rejected token, captcha closed): go back to the bot list
+// and say why in a small note there
+function endRoom(text) {
+  stopCountdown();
+  $("botBox").hidden = true;
+  $("notice").textContent = text;
+  $("notice").hidden = false;
+  show("pick");
+}
 
 function renderModes() {
   $("modes").innerHTML = "";
@@ -51,7 +58,7 @@ function startCountdown(seconds) {
 
 api.onEvent((msg) => {
   if (msg.type === "status") setStatus(msg.text);
-  else if (msg.type === "error") { setStatus(msg.text, true); showBackOnly(); }
+  else if (msg.type === "error") endRoom(msg.text);
   else if (msg.type === "link") {
     link = msg.link;
     $("link").textContent = msg.link;
@@ -66,15 +73,13 @@ api.onEvent((msg) => {
     $("addBot").disabled = msg.count >= msg.max;
     $("removeBot").disabled = msg.count <= 0;
   } else if (msg.type === "closed") {
-    stopCountdown();
-    $("botBox").hidden = true;
-    showBackOnly();
-    setStatus(`Room closed (${msg.reason}).`, msg.reason !== "stopped");
+    if (msg.reason !== "stopped" && !$("live").hidden) endRoom(`Room closed: ${msg.reason}.`);
   }
 });
 
 $("play").onclick = () => {
   if (!selected) return;
+  $("notice").hidden = true;
   $("settingsTitle").textContent = `${selected.title} room`;
   $("maxPlayers").value = DEFAULT_MAX[selected.team_size] || 4;
   show("settings");
@@ -94,7 +99,6 @@ $("create").onclick = async () => {
   });
 };
 $("closeRoom").onclick = async () => { stopCountdown(); await api.stopRoom(); show("pick"); };
-$("back2").onclick = () => show("pick");
 $("open").onclick = () => link && api.openLink(link);
 $("addBot").onclick = () => api.addBot();
 $("removeBot").onclick = () => api.removeBot();
