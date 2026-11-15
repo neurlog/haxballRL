@@ -1,6 +1,6 @@
 """Check that policy.js builds the same observation and logits as the Python code.
 
-    python headless-bot/parity_test.py [checkpoint]
+    python headless-bot/parity_test.py [checkpoint] [--stadium big] [--team-size 3]
 
 Plays a few hundred decisions of random-action games in HaxEnv, records the raw state the
 Node bot would see in a real room, runs policy.js on it, and compares.
@@ -27,7 +27,13 @@ from hax.model import HaxNet, load_policy  # noqa: E402
 
 
 def main():
-    ckpt = sys.argv[1] if len(sys.argv) > 1 else None
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("ckpt", nargs="?", default=None)
+    ap.add_argument("--stadium", default="classic")
+    ap.add_argument("--team-size", type=int, default=1)
+    args = ap.parse_args()
+    ckpt = args.ckpt
     if ckpt:
         net = load_policy(ckpt)
     else:
@@ -37,7 +43,7 @@ def main():
             torch.nn.init.normal_(p, 0, 0.3)
         torch.save(net.state_dict(), ckpt := os.path.join(tempfile.mkdtemp(), "rand.pt"))
     pol = export(ckpt)
-    env = HaxEnv(4, team_size=1, seed=7)
+    env = HaxEnv(4, team_size=args.team_size, stadium=args.stadium, seed=7)
     samples = []
     for step in range(900):
         if step % 10 == 0:  # random actions held for a third of a second, so players cover the pitch
@@ -60,7 +66,8 @@ def main():
                 g = dict(team=team, playState=play_state, kickingTeam=1 if env.kicking[e] == RED else 2,
                          timeS=float(env.play_ticks[e] / 60), timeLimitS=env.time_limit / 60,
                          myScore=int(env.score[e, my]), theirScore=int(env.score[e, their]),
-                         lastActions=[int(x) for x in env.last_act[e, k]], goalX=env.goal_x)
+                         lastActions=[int(x) for x in env.last_act[e, k]], goalX=env.goal_x,
+                         posScale=env.pos_scale.tolist(), distScale=env.dist_scale)
                 with torch.no_grad():
                     lg = net(torch.from_numpy(obs[e, k][None]), env.n_mates, env.n_opps)[0][0].numpy()
                 samples.append(dict(me=ps[k], mates=mates, opps=opps, ball=ball, g=g,
@@ -88,7 +95,7 @@ console.log(JSON.stringify({{n: S.length, max_obs_diff: mo, max_logit_diff: ml, 
     out = subprocess.run(["node", "-e", js], capture_output=True, text=True, check=True).stdout
     r = json.loads(out)
     ok = r["max_obs_diff"] < 1e-5 and r["max_logit_diff"] < 1e-3
-    print(f"{r['n']} samples | max obs diff {r['max_obs_diff']:.2e} | max logit diff {r['max_logit_diff']:.2e} | "
+    print(f"{args.team_size}v{args.team_size} {args.stadium}: {r['n']} samples | max obs diff {r['max_obs_diff']:.2e} | max logit diff {r['max_logit_diff']:.2e} | "
           f"argmax agreement {r['argmax_agree']:.1%} -> {'PASS' if ok else 'FAIL'}")
     sys.exit(0 if ok else 1)
 

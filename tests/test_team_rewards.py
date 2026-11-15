@@ -20,9 +20,9 @@ from hax.env import HaxEnv, keys_to_action  # noqa: E402
 FAR_BLUE = [(-300, 150), (-300, -150), (300, 150)]
 
 
-def make_env(pass_reward=0.0, crowd=0.0, speed=0.0, spirit=0.0):
+def make_env(pass_reward=0.0, crowd=0.0, speed=0.0, spirit=0.0, touch=0.0):
     env = HaxEnv(1, team_size=3, ping_ms=0.0, jitter_ms=0.0, kickoff_timeout_s=0.0, goal_reward=0.0, win_reward=0.0)
-    env.set_reward_weights(speed=speed)
+    env.set_reward_weights(speed=speed, touch=touch)
     env.set_team_rewards(pass_reward=pass_reward, crowd_penalty=crowd, team_spirit=spirit)
     return env
 
@@ -125,6 +125,31 @@ def test_team_spirit_shares_individual_rewards():
     r = play(env, lambda t: [(1, 0, False)] * 3 + [STILL] * 3, 20)
     print(f"  same, team spirit 1.0:    red {r[:3].round(2)}")
     assert r[0] > 0.3 and np.allclose(r[:3], r[0])
+
+
+def test_scrum_earns_one_touch_not_three():
+    env = make_env(touch=1.0)
+    # three red players packed round the ball, all pushing it towards the blue goal with kick held
+    place(env, (0, 0), [(-27, 0), (-20, -20), (-20, 20)])
+    r = play(env, lambda t: [(1, 0, t < 3)] * 3 + [STILL] * 3, 15)
+    print(f"  scrum of 3 kicks the ball goalward: red touch rewards {r[:3].round(2)} (sum {r[:3].sum():+.2f})")
+    assert 0.5 < r[:3].sum() < 1.3, "one kick's worth for the whole scrum (crediting everyone would give ~3)"
+
+
+def test_trailing_the_chaser_does_not_pay():
+    # 3v3 early-stage weights: chase 0.02, crowding 0.01, team spirit 0.1
+    env = make_env(speed=0.02, crowd=0.01, spirit=0.1)
+    place(env, (0, 100), [(-200, 100), (-225, 85), (-225, 115)])  # a tight bunch all running at the ball
+    bunch = play(env, lambda t: [(1, 0, False)] * 3 + [STILL] * 3, 30)
+    env = make_env(speed=0.02, crowd=0.01, spirit=0.1)
+    place(env, (0, 100), [(-200, 100), (-350, -100), (-150, -200)])  # same chaser, teammates spread out
+    spread = play(env, lambda t: [(1, 0, False), STILL, STILL] + [STILL] * 3, 30)
+    print(f"  1 s run at the ball - bunched: chaser {bunch[0]:+.3f}, followers {bunch[1]:+.3f} {bunch[2]:+.3f} "
+          f"(team {bunch[:3].sum():+.3f}) | spread: chaser {spread[0]:+.3f}, others {spread[1]:+.3f} {spread[2]:+.3f} "
+          f"(team {spread[:3].sum():+.3f})")
+    assert bunch[1] < 0 and bunch[2] < 0, "trailing the chaser in a bunch loses reward"
+    assert spread[:3].sum() > bunch[:3].sum() + 0.3, "the team earns clearly more spread out than bunched"
+    assert spread[0] > bunch[0], "even the chaser is better off without teammates on top of it"
 
 
 if __name__ == "__main__":

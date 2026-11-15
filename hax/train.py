@@ -112,6 +112,7 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     # viewer / logging
     a("--view-every", type=int, default=1000)
     a("--view-seconds", type=float, default=20.0)
+    a("--view-skip", type=float, default=90.0, help="fast-forward the viewer game to this match time (s) first")
     a("--no-view", action="store_true")
     a("--log-every", type=int, default=10)
     a("--ckpt-every-games", type=int, default=1000)
@@ -170,6 +171,10 @@ def main(argv=None, defaults=None, mode_dir="."):
             src = load_policy(args.init_from)
             model.load_state_dict(src.state_dict())
             print(f"initialised from {args.init_from}")
+        else:
+            # from scratch: let the network see its teammates from the start (the zero-init of
+            # the teammate encoder only exists so a transferred 1v1 policy starts unchanged)
+            model.mate_enc[2].reset_parameters()
         league.set_champion(snap(), 0, 0)
         with open(os.path.join(run_dir, "config.json"), "w") as f:
             json.dump(vars(args), f, indent=1)
@@ -247,7 +252,7 @@ def main(argv=None, defaults=None, mode_dir="."):
             return
         from .viewer import run_viewer
         payload = dict(team_size=ts, stadium=args.stadium, ping_ms=args.ping_ms, model_kwargs=mkw,
-                       learner=snap(), champion=league.champion_state, rows=rows[-400:], seconds=args.view_seconds,
+                       learner=snap(), champion=league.champion_state, rows=rows[-400:], seconds=args.view_seconds, skip_to_s=args.view_skip,
                        games=games, title=f"{ts}v{ts} {args.stadium} | {args.name} | {games} games")
         viewer_proc = mp.get_context("spawn").Process(target=run_viewer, args=(payload,), daemon=True)
         viewer_proc.start()

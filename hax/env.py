@@ -15,7 +15,8 @@ HaxballGym (`haxball_core`) gives us the real engine: physics, kickoff barriers,
   after `kickoff_timeout_s`, its nearest player is walked into the ball, so a passive
   (e.g. freshly initialised) opponent cannot freeze a game. 0 turns it off.
 * **Observations** for an entity network (`SELF_DIM` + one `ENT_DIM` row per other
-  player, teammates first), x-mirrored for blue so every agent attacks +x.
+  player, teammates first), x-mirrored for blue so every agent attacks +x, positions
+  scaled by the stadium's size (`stadium_scales`).
 * **Rewards** (RLGym-style: every term is in [-1, 1] and its weight sets its influence):
   * events: +/-`goal_reward` per goal scored/conceded, +/-`win_reward` to every player of
     the winning/losing team when the game ends (0 for a draw);
@@ -24,6 +25,7 @@ HaxballGym (`haxball_core`) gives us the real engine: physics, kickoff barriers,
       costs what moving closer earns, so stepping back and forth next to the ball earns ~0,
     - touch: the change in the ball's velocity TOWARDS THE GOAL YOU ATTACK while you are
       touching it, signed (a full kick straight at goal = +1, one straight away = -1).
+      Credited to one player per team (the one nearest the ball), so a scrum earns one touch.
       Kicking the ball into a wall and having it bounce back sums to about zero, so
       pinning the ball in a corner and spamming kick earns nothing
       (tests/test_rewards.py checks this),
@@ -61,8 +63,19 @@ BALL_SPEED_REF = 6.0  # about the fastest a ball gets from a kick (kick strength
 DIRS = np.array([(0, 0), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1)], np.int64)
 N_ACTIONS = 18  # action = dir + 9 * kick
 
-POS_SCALE = np.array([1 / 420.0, 1 / 200.0])
 VEL_SCALE = 1 / 5.0
+
+
+def stadium_scales(stadium: str):
+    """Observation position scale (1/width, 1/height) and distance scale for a stadium, so
+    positions land in about [-1, 1] on any map (like HaxballGym's DefaultObs 'auto'). On
+    Classic (420 x 200) this is exactly 1/420, 1/200 and 400, as the 1v1 models were trained."""
+    import json
+
+    from haxballgym import stadium_text
+    d = json.loads(stadium_text(stadium))
+    w, h = float(d["width"]), float(d["height"])
+    return np.array([1.0 / w, 1.0 / h]), 400.0 * w / 420.0
 SELF_DIM = 27
 ENT_DIM = 8
 
@@ -107,6 +120,7 @@ class HaxEnv:
             stadium=None if stadium == "classic" else stadium,
         )
         self.stadium = stadium
+        self.pos_scale, self.dist_scale = stadium_scales(stadium)
         self.rng = np.random.default_rng(seed)
         self.ping_ticks = ping_ms * TICKS_PER_S / 1000.0
         self.jitter_ticks = jitter_ms * TICKS_PER_S / 1000.0
@@ -282,9 +296,13 @@ class HaxEnv:
                 contact = (np.minimum(dist0, dist) < 30.0) & ((self.celeb == 0) & ~stalled & ~g)[:, None]
             if self.w_touch:
                 # projected on the direction to the goal each player attacks, credited WITH SIGN
-                # to the players in contact (before or after the tick). Kick + wall rebound ~ 0.
+                # to the player in contact (before or after the tick). Kick + wall rebound ~ 0.
+                # Only ONE player per team is credited - the one nearest the ball - so a scrum of
+                # teammates around the ball earns one touch, not three (identical in 1v1).
                 gain = (self._goal_dir(st0.ball_pos) * dv[:, None]).sum(-1) / 5.0  # (N,P)
-                touch += np.where(contact, gain, 0.0)
+                dc = np.where(contact, dist0, np.inf).reshape(-1, 2, self.ts)
+                credited = (contact.reshape(-1, 2, self.ts) & (dc == dc.min(-1, keepdims=True))).reshape(contact.shape)
+                touch += np.where(credited, gain, 0.0)
             if self.w_pass:
                 rew += self._passes(st, dist0, contact, np.linalg.norm(dv, axis=-1), done)
             done |= ended_goal
@@ -397,14 +415,14 @@ class HaxEnv:
         out = np.zeros((n, P, self.obs_dim), np.float32)
         rel_b = bp - pp
         o = out
-        o[..., 0:2] = pp * POS_SCALE
+        o[..., 0:2] = pp * self.pos_scale
         o[..., 2:4] = pv * VEL_SCALE
-        o[..., 4:6] = rel_b * POS_SCALE
+        o[..., 4:6] = rel_b * self.pos_scale
         o[..., 6:8] = bv * VEL_SCALE
-        o[..., 8:10] = bp * POS_SCALE
-        o[..., 10:12] = (tgt - pp) * POS_SCALE
-        o[..., 12:14] = (own - pp) * POS_SCALE
-        o[..., 14] = np.linalg.norm(rel_b, axis=-1) / 400.0
+        o[..., 8:10] = bp * self.pos_scale
+        o[..., 10:12] = (tgt - pp) * self.pos_scale
+        o[..., 12:14] = (own - pp) * self.pos_scale
+        o[..., 14] = np.linalg.norm(rel_b, axis=-1) / self.dist_scale
         k = action_to_keys(self.last_act)  # (N,P,2,3), own frame
         o[..., 15:21] = k.reshape(n, P, 6)
         waiting = ((self.celeb == 0) & (np.abs(st.ball_pos).sum(-1) == 0) & (np.abs(st.ball_vel).sum(-1) == 0))
@@ -422,11 +440,11 @@ class HaxEnv:
                 pj = st.player_pos[:, j] * mir[:, kk]
                 vj = st.player_vel[:, j] * mir[:, kk]
                 rel = pj - pp[:, kk]
-                o[:, kk, b:b + 2] = rel * POS_SCALE
+                o[:, kk, b:b + 2] = rel * self.pos_scale
                 o[:, kk, b + 2:b + 4] = vj * VEL_SCALE
-                o[:, kk, b + 4:b + 6] = (bp[:, kk] - pj) * POS_SCALE
-                o[:, kk, b + 6] = np.linalg.norm(rel, axis=-1) / 400.0
-                o[:, kk, b + 7] = np.linalg.norm(bp[:, kk] - pj, axis=-1) / 400.0
+                o[:, kk, b + 4:b + 6] = (bp[:, kk] - pj) * self.pos_scale
+                o[:, kk, b + 6] = np.linalg.norm(rel, axis=-1) / self.dist_scale
+                o[:, kk, b + 7] = np.linalg.norm(bp[:, kk] - pj, axis=-1) / self.dist_scale
         return out
 
     # ------------------------------------------------------------------ helpers

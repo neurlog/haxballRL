@@ -5,7 +5,7 @@
 
 const RED = 1, BLUE = 2; // node-haxball team ids
 const DIRS = [[0, 0], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]];
-const PX = 1 / 420, PY = 1 / 200, VS = 1 / 5;
+const VS = 1 / 5;
 
 function actionKeys(a) { // joint action -> [dx, dy, kick] in the agent's own (mirrored) frame
   const d = DIRS[a % 9];
@@ -17,9 +17,12 @@ function actionKeys(a) { // joint action -> [dx, dy, kick] in the agent's own (m
  *  me, mates[], opps[]: {x, y, vx, vy} in world coordinates
  *  ball: {x, y, vx, vy}
  *  g: {team (1 red / 2 blue), playState (0 kickoff, 1 playing, 2 goal), kickingTeam,
- *      timeS, timeLimitS, myScore, theirScore, lastActions: [a_t-1, a_t-2], goalX}
+ *      timeS, timeLimitS, myScore, theirScore, lastActions: [a_t-1, a_t-2], goalX,
+ *      posScale: [1/width, 1/height], distScale}   (defaults: Classic 1/420, 1/200, 400)
  */
 function buildObs(me, mates, opps, ball, g) {
+  const PX = g.posScale ? g.posScale[0] : 1 / 420, PY = g.posScale ? g.posScale[1] : 1 / 200;
+  const DS = g.distScale || 400;
   const sx = g.team === RED ? 1 : -1;
   const gx = g.goalX;
   const px = sx * me.x, py = me.y, vx = sx * me.vx, vy = me.vy;
@@ -31,7 +34,7 @@ function buildObs(me, mates, opps, ball, g) {
     bx * PX, by * PY,
     (gx - px) * PX, (0 - py) * PY,
     (-gx - px) * PX, (0 - py) * PY,
-    Math.hypot(rbx, rby) / 400,
+    Math.hypot(rbx, rby) / DS,
   ];
   for (const a of g.lastActions) o.push(...actionKeys(a));
   const waiting = g.playState === 0 ? 1 : 0;
@@ -42,7 +45,7 @@ function buildObs(me, mates, opps, ball, g) {
     const qx = sx * p.x, qy = p.y;
     const rx = qx - px, ry = qy - py;
     o.push(rx * PX, ry * PY, sx * p.vx * VS, p.vy * VS, (bx - qx) * PX, (by - qy) * PY,
-      Math.hypot(rx, ry) / 400, Math.hypot(bx - qx, by - qy) / 400);
+      Math.hypot(rx, ry) / DS, Math.hypot(bx - qx, by - qy) / DS);
   }
   return o;
 }

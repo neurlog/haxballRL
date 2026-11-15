@@ -1,8 +1,9 @@
 """pygame rendering: the pitch, a live game, and training charts.
 
 `run_viewer(payload)` is what the trainer launches in a separate process every N games:
-the current learner (red) plays the current champion (blue) in real time for a few
-seconds next to charts of the training log.
+the current learner (red) plays the current champion (blue). The game is fast-forwarded
+to 1:30 on the match clock (`--view-skip`), then shown in real time for `--view-seconds`
+next to charts of the training log.
 Keys in the window: D = sampled/argmax actions, B = blue: champion <-> learner, Esc = close.
 """
 
@@ -16,7 +17,7 @@ import numpy as np
 
 GRASS, GRASS2, LINE = (105, 135, 85), (98, 127, 79), (199, 230, 189)
 RED_C, BLUE_C, BALL_C, TXT = (229, 110, 86), (86, 137, 229), (245, 245, 245), (235, 235, 235)
-SCALE = 1.0
+MAX_FIELD_PX = 900  # the pitch is scaled down to fit this width (Big is 1200 px at 1:1)
 
 
 def _arc_points(a, b, curve_deg, n=12):
@@ -47,7 +48,8 @@ class Renderer:
         self.st = d
         self.bg = d.get("bg", {})
         self.fw, self.fh = d.get("width", 420), d.get("height", 200)
-        self.field_w = width or int(2 * self.fw * SCALE + 20)
+        self.sc = min(1.0, MAX_FIELD_PX / (2 * self.fw))
+        self.field_w = width or int(2 * self.fw * self.sc + 20)
         self.field_h = height
         pygame.init()
         self.screen = pygame.display.set_mode((self.field_w + panel_width, self.field_h))
@@ -66,39 +68,40 @@ class Renderer:
         self.goals = d.get("goals", [])
 
     def w2s(self, x, y):
-        return (int(self.field_w / 2 + x * SCALE), int(self.field_h / 2 + 20 + y * SCALE))
+        return (int(self.field_w / 2 + x * self.sc), int(self.field_h / 2 + 20 + y * self.sc))
 
     def draw_field(self):
         pg, s = self.pg, self.screen
         s.fill((60, 70, 60))
         bw, bh = self.bg.get("width", 370), self.bg.get("height", 170)
         x0, y0 = self.w2s(-self.fw, -self.fh)
-        pg.draw.rect(s, GRASS, (x0, y0, int(2 * self.fw * SCALE), int(2 * self.fh * SCALE)))
-        for i in range(-6, 7, 2):
-            sx0, sy0 = self.w2s(i * 60, -bh)
-            pg.draw.rect(s, GRASS2, (sx0, sy0, int(60 * SCALE), int(2 * bh * SCALE)))
-        pg.draw.rect(s, LINE, (*self.w2s(-bw, -bh), int(2 * bw * SCALE), int(2 * bh * SCALE)), 3)
+        pg.draw.rect(s, GRASS, (x0, y0, int(2 * self.fw * self.sc), int(2 * self.fh * self.sc)))
+        stripe = 2 * bw / 12  # 12 alternating stripes across the pitch, on any stadium
+        for i in range(1, 12, 2):
+            sx0, sy0 = self.w2s(-bw + i * stripe, -bh)
+            pg.draw.rect(s, GRASS2, (sx0, sy0, int(stripe * self.sc) + 1, int(2 * bh * self.sc)))
+        pg.draw.rect(s, LINE, (*self.w2s(-bw, -bh), int(2 * bw * self.sc), int(2 * bh * self.sc)), 3)
         pg.draw.line(s, LINE, self.w2s(0, -bh), self.w2s(0, bh), 3)
-        pg.draw.circle(s, LINE, self.w2s(0, 0), int(self.bg.get("kickOffRadius", 75) * SCALE), 3)
+        pg.draw.circle(s, LINE, self.w2s(0, 0), int(self.bg.get("kickOffRadius", 75) * self.sc), 3)
         for g in self.goals:
             col = RED_C if g["team"] == "red" else BLUE_C
             pg.draw.line(s, col, self.w2s(*g["p0"]), self.w2s(*g["p1"]), 3)
         for pts in self.nets:
             pg.draw.lines(s, (20, 20, 20), False, [self.w2s(*p) for p in pts], 2)
         for p in self.posts:
-            pg.draw.circle(s, (20, 20, 20), self.w2s(*p["pos"]), int(p.get("radius", 8) * SCALE) + 1)
+            pg.draw.circle(s, (20, 20, 20), self.w2s(*p["pos"]), int(p.get("radius", 8) * self.sc) + 1)
             col = tuple(int(p.get("color", "FFFFFF")[i:i + 2], 16) for i in (0, 2, 4))
-            pg.draw.circle(s, col, self.w2s(*p["pos"]), int(p.get("radius", 8) * SCALE) - 1)
+            pg.draw.circle(s, col, self.w2s(*p["pos"]), int(p.get("radius", 8) * self.sc) - 1)
 
     def draw_frame(self, f, label=""):
         pg, s = self.pg, self.screen
         self.draw_field()
         for (x, y), team, kick in zip(f["players"], f["teams"], f["kicking"]):
             c = self.w2s(x, y)
-            pg.draw.circle(s, (255, 255, 255) if kick else (0, 0, 0), c, int(15 * SCALE) + 2)
-            pg.draw.circle(s, RED_C if team == 2 else BLUE_C, c, int(15 * SCALE))
-        pg.draw.circle(s, (0, 0, 0), self.w2s(*f["ball"]), int(10 * SCALE) + 2)
-        pg.draw.circle(s, BALL_C, self.w2s(*f["ball"]), int(10 * SCALE))
+            pg.draw.circle(s, (255, 255, 255) if kick else (0, 0, 0), c, int(15 * self.sc) + 2)
+            pg.draw.circle(s, RED_C if team == 2 else BLUE_C, c, int(15 * self.sc))
+        pg.draw.circle(s, (0, 0, 0), self.w2s(*f["ball"]), int(10 * self.sc) + 2)
+        pg.draw.circle(s, BALL_C, self.w2s(*f["ball"]), int(10 * self.sc))
         t = f["time_s"]
         clock = f"{int(t // 60)}:{int(t % 60):02d}" + (" OT" if f["overtime"] else "")
         txt = self.big.render(f"{f['score'][0]}  -  {f['score'][1]}     {clock}", True, TXT)
@@ -176,6 +179,31 @@ def run_viewer(payload):
     blue_modes = ["champion", "learner"]
     bm, det = 0, False
     obs = env.observe()
+
+    def policy_actions(obs, mode):
+        o = torch.from_numpy(obs.reshape(-1, env.obs_dim))
+        acts = nets["learner"].act(o, env.n_mates, env.n_opps, det)[0].numpy().reshape(1, -1)
+        net = nets.get(mode, nets["learner"])
+        acts[:, ts:] = net.act(o[ts:], env.n_mates, env.n_opps, det)[0].numpy()
+        return acts
+
+    # fast-forward (no drawing) to `skip_to_s` on the match clock, so the window shows mid-game action
+    skip = payload.get("skip_to_s", 90.0)
+    if skip > 0:
+        msg = r.big.render(f"fast-forwarding to {int(skip // 60)}:{int(skip % 60):02d} ...", True, TXT)
+        r.draw_field()
+        r.screen.blit(msg, (r.field_w / 2 - msg.get_width() / 2, r.field_h / 2))
+        pygame.display.flip()
+        for i in range(20000):  # cap: a 3:00 game is ~6000 decisions
+            if env.play_ticks[0] >= skip * 60:
+                break
+            obs, _, _, _ = env.step(policy_actions(obs, "champion"))
+            if i % 200 == 0:
+                for e in pygame.event.get():
+                    if e.type == pygame.QUIT or (e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE):
+                        pygame.quit()
+                        return
+
     clock = pygame.time.Clock()
     t_end = time.time() + payload.get("seconds", 20.0)
     while time.time() < t_end:
@@ -187,12 +215,8 @@ def run_viewer(payload):
                 det = not det
             if e.type == pygame.KEYDOWN and e.key == pygame.K_b:
                 bm = (bm + 1) % len(blue_modes)
-        o = torch.from_numpy(obs.reshape(-1, env.obs_dim))
-        acts = nets["learner"].act(o, env.n_mates, env.n_opps, det)[0].numpy().reshape(1, -1)
         mode = blue_modes[bm]
-        net = nets.get(mode, nets["learner"])
-        acts[:, ts:] = net.act(o[ts:], env.n_mates, env.n_opps, det)[0].numpy()
-        obs, _, _, fin = env.step(acts)
+        obs, _, _, fin = env.step(policy_actions(obs, mode))
         f = env.frame(0)
         if fin:
             _, rg, bg, *_ = fin[0]
