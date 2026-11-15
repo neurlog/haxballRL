@@ -5,7 +5,7 @@ pick a mode, press **Play**, solve one captcha, and get a room link.
 
 ## Use
 
-1. Open `dist/haxballRL-0.1.0-arm64.dmg` and drag **haxballRL** to Applications.
+1. Open `dist/haxballRL-mac-arm64.dmg` (or run `dist/haxballRL-win-x64.exe` on Windows) and drag **haxballRL** to Applications.
 2. Under **Bots**, click **1v1 Classic** or **3v3 Big** (click it again to unselect), then **Play**.
 3. Set a password, max players and room name, then press **Create room**.
 4. A small window shows HaxBall's headless-token page. Solve the captcha and the app reads
@@ -32,7 +32,7 @@ cd app
 npm install
 npm start                  # run the app
 node tests/host.test.js    # bot seating / decision test with a fake room
-npm run dist               # build dist/haxballRL-<version>-arm64.dmg
+npm run dist               # build dist/haxballRL-mac-arm64.dmg (npm run dist:win for dist/haxballRL-win-x64.exe)
 ```
 
 `HAXBALLRL_HOSTTEST=1 npm start` starts the room process with a fake token and prints its
