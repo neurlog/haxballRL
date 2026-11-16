@@ -3,6 +3,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("haxballrl", {
+  version: () => ipcRenderer.invoke("version"),
   modes: () => ipcRenderer.invoke("modes"),
   startRoom: (opts) => ipcRenderer.invoke("start-room", opts),
   stopRoom: () => ipcRenderer.invoke("stop-room"),

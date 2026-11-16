@@ -83,6 +83,7 @@ function stopHost() {
   }
 }
 
+ipcMain.handle("version", () => require("./package.json").version);  // shown under the banner
 ipcMain.handle("modes", () => JSON.parse(fs.readFileSync(path.join(policiesDir(), "index.json"), "utf8")));
 
 ipcMain.handle("start-room", async (_e, opts) => {

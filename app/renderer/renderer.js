@@ -110,3 +110,4 @@ $("copy").onclick = async () => {
 };
 
 api.modes().then((m) => { modes = m; renderModes(); show("pick"); });
+api.version().then((v) => { $("version").textContent = `v${v}`; });
