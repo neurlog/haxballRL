@@ -48,10 +48,10 @@ REWARDS = dict(
     # A touch inside a corner square also resets it, so corner play is judged by the corner rule only.
     idle_penalty=0.5 / 30,  # 0.0167 per decision = 0.5/s: 6 s of the full share costs a +-3 goal
     # share of it by score and distance (rows winning / level / losing, columns nearest / everyone else):
-    #   winning: nearest pays half, the rest nothing   (you're ahead: holding is less of a sin)
+    #   winning: nobody pays                            (you're ahead: running the clock down is fine)
     #   level:   nearest pays in full, the rest half    (someone has to go and win it)
     #   losing:  everyone pays in full                  (you have to go and get the ball)
-    idle_table="0.5,0,1,0.5,1,1",
+    idle_table="0,0,1,0.5,1,1",
     idle_dist=40.0,
     idle_hold=5.0,
     # ...but not from the start: early on it swamped everything and the bots never learned to go to

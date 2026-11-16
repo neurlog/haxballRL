@@ -1,7 +1,7 @@
 {
   "name": "haxballrl",
   "productName": "haxballRL",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Play HaxBall against reinforcement-learning bots",
   "main": "main.js",
   "private": true,

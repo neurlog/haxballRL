@@ -26,9 +26,9 @@ from hax.model import load_policy  # noqa: E402
 
 APP = os.path.join(ROOT, "app")
 MODES = {
-    "1v1-classic": dict(title="1v1 Classic", ckpt="1v1-classic/models/main-50kv9.pt", team_size=1,
-                        stadium="classic", stadium_name="Classic", games=50000,
-                        blurb="Champion after 50,000 games of league self-play (run v9, gen 11). You vs the bot on the Classic map."),
+    "1v1-classic": dict(title="1v1 Classic", ckpt="1v1-classic/models/main-75kv9.pt", team_size=1,
+                        stadium="classic", stadium_name="Classic", games=75000,
+                        blurb="Champion after 75,000 games of league self-play (run v9, gen 13). You vs the bot on the Classic map."),
     "3v3-big": dict(title="3v3 Big", ckpt="3v3-big/models/champion_5k.pt", team_size=3, stadium="big",
                     stadium_name="Big", games=5000,
                     blurb="Champion after 5,000 games. 3 bots vs your team on the Big map; empty spots on your team are filled with bots."),

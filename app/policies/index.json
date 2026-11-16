@@ -12,8 +12,8 @@
   "dist_scale": 400.0,
   "frame_skip": 2,
   "time_limit_min": 3,
-  "games_trained": 50000,
-  "blurb": "Champion after 50,000 games of league self-play (run v9, gen 11). You vs the bot on the Classic map."
+  "games_trained": 75000,
+  "blurb": "Champion after 75,000 games of league self-play (run v9, gen 13). You vs the bot on the Classic map."
  },
  {
   "key": "3v3-big",
