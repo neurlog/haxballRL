@@ -96,10 +96,14 @@ class Renderer:
     def draw_frame(self, f, label=""):
         pg, s = self.pg, self.screen
         self.draw_field()
+        if f.get("corner_box"):
+            self.draw_corner_boxes(f["corner_box"], f.get("corner_hot", False))
         for (x, y), team, kick in zip(f["players"], f["teams"], f["kicking"]):
             c = self.w2s(x, y)
             pg.draw.circle(s, (255, 255, 255) if kick else (0, 0, 0), c, int(15 * self.sc) + 2)
             pg.draw.circle(s, RED_C if team == 2 else BLUE_C, c, int(15 * self.sc))
+        if f.get("idle_hot"):  # idle-ball penalty running: red ring round the ball (spectators only)
+            pg.draw.circle(s, (230, 30, 30), self.w2s(*f["ball"]), int(10 * self.sc) + 7, 3)
         pg.draw.circle(s, (0, 0, 0), self.w2s(*f["ball"]), int(10 * self.sc) + 2)
         pg.draw.circle(s, BALL_C, self.w2s(*f["ball"]), int(10 * self.sc))
         t = f["time_s"]
@@ -109,6 +113,19 @@ class Renderer:
         if label:
             lt = self.font.render(label, True, TXT)
             s.blit(lt, (self.field_w / 2 - lt.get_width() / 2, self.field_h - 24))
+
+    def draw_corner_boxes(self, size, hot=False):
+        """The corner-stall squares (training-only penalty zones), see-through red; brighter while
+        the penalty is running. For spectators only: the agents never see them."""
+        pg = self.pg
+        bw, bh = self.bg.get("width", 370), self.bg.get("height", 170)
+        px = max(1, int(round(size * self.sc)))
+        box = pg.Surface((px, px), pg.SRCALPHA)
+        box.fill((230, 30, 30, 150 if hot else 70))
+        for sx in (-1, 1):
+            for sy in (-1, 1):
+                x, y = self.w2s(sx * bw, sy * bh)
+                self.screen.blit(box, (x - px if sx > 0 else x, y - px if sy > 0 else y))
 
     def draw_chart(self, rect, title, series, ymin=None, ymax=None):
         """series: list of (label, color, values)."""
@@ -164,7 +181,9 @@ def run_viewer(payload):
     torch.set_num_threads(1)
     ts = payload["team_size"]
     env = HaxEnv(1, team_size=ts, stadium=payload.get("stadium", "classic"),
-                 seed=int(time.time()), ping_ms=payload.get("ping_ms", 0.0))
+                 seed=int(time.time()), ping_ms=payload.get("ping_ms", 0.0),
+                 corner_box=payload.get("corner_box", 0.0), corner_hold_s=payload.get("corner_hold", 5.0),
+                 **payload.get("idle", {}))
     nets = {}
     for k in ("learner", "champion"):
         if payload.get(k) is not None:

@@ -67,6 +67,24 @@ def test_backward_pass_earns_nothing():
     assert env.passes[0].sum() == 0 and np.allclose(r, 0)
 
 
+def test_backward_pass_pays_when_allowed():
+    env = make_env(pass_reward=1.0)
+    env.pass_backward = True  # 3v3 default (--pass-backward)
+    place(env, (122, 0), [(150, 0), (-200, 0), (-200, 150)])  # the same backward pass as above
+    r = play(env, lambda t: [(-1, 0, t < 3)] + [STILL] * 5, 90)
+    print(f"  backward pass (allowed): red {r[:3].round(2)}, passes {env.passes[0]}")
+    assert env.passes[0, 0] == 1 and r[0] > 0.9 and np.allclose(r[3:], -r[0])
+
+
+def test_70px_pass_pays_a_little():
+    env = make_env(pass_reward=1.0)
+    env.pass_min_dist = 70.0  # 3v3 default
+    place(env, (28, 0), [(0, 0), (130, 0), (-200, 150)])  # red 1 ~100 px away: under 100, over 70
+    r = play(env, lambda t: [(1, 0, t < 3)] + [STILL] * 5, 60)
+    print(f"  ~80 px pass (min 70): red {r[:3].round(3)}, passes {env.passes[0]}")
+    assert env.passes[0, 0] == 1 and 0.2 < r[0] < 0.4  # paid in proportion: ~80/300 of a full pass
+
+
 def test_short_pass_earns_nothing():
     env = make_env(pass_reward=1.0)
     place(env, (28, 0), [(0, 0), (85, 0), (-200, 150)])  # red 1 only ~30 px away

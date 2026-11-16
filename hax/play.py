@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import time
 
@@ -56,11 +57,26 @@ def main(argv=None, mode_dir=".", team_size=1, stadium="classic"):
     p.add_argument("--red", default="latest")
     p.add_argument("--blue", default="champion")
     p.add_argument("--ping-ms", type=float, default=0.0)
+    p.add_argument("--time-limit", type=float, default=180.0, help="game length in seconds (HaxBall default 3 min)")
     p.add_argument("--deterministic", action="store_true", help="argmax actions instead of sampling")
     p.add_argument("--games", type=int, default=0, help="stop after N games (0 = until Esc)")
     p.add_argument("--fast", action="store_true", help="no window: play --games games in parallel and print results")
+    p.add_argument("--corner-box", type=float, default=None, help="side (px) of the see-through red corner-stall "
+                   "squares to draw (default: the run's training setting; 0 hides them)")
     args = p.parse_args(argv)
     run_dir = os.path.join(mode_dir, "runs", args.run)
+    corner_box, corner_hold, idle = 0.0, 5.0, {}
+    try:
+        with open(os.path.join(run_dir, "config.json")) as f:
+            cfg = json.load(f)
+        corner_box, corner_hold = cfg.get("corner_box", 0.0), cfg.get("corner_hold", 5.0)
+        # (only so the viewer can ring the ball while the idle penalty would be running)
+        idle = dict(idle_dist=cfg.get("idle_dist", 50.0), idle_hold_s=cfg.get("idle_hold", 5.0),
+                    idle_penalty=cfg.get("idle_penalty", 0.0))
+    except (OSError, ValueError):
+        pass
+    if args.corner_box is not None:
+        corner_box = args.corner_box
     sides = []
     for name in (args.red, args.blue):
         r = resolve(name, run_dir)
@@ -86,7 +102,8 @@ def main(argv=None, mode_dir=".", team_size=1, stadium="classic"):
 
     if args.fast:
         n = max(1, args.games or 32)
-        env = HaxEnv(n, team_size=ts, stadium=stadium, seed=int(time.time()), ping_ms=args.ping_ms)
+        env = HaxEnv(n, team_size=ts, stadium=stadium, seed=int(time.time()), ping_ms=args.ping_ms,
+                     time_limit_s=args.time_limit)
         obs, res = env.observe(), []
         done_env = np.zeros(n, bool)
         while not done_env.all():
@@ -105,7 +122,8 @@ def main(argv=None, mode_dir=".", team_size=1, stadium="classic"):
 
     from .viewer import Renderer
 
-    env = HaxEnv(1, team_size=ts, stadium=stadium, seed=int(time.time()), ping_ms=args.ping_ms)
+    env = HaxEnv(1, team_size=ts, stadium=stadium, seed=int(time.time()), ping_ms=args.ping_ms,
+                 time_limit_s=args.time_limit, corner_box=corner_box, corner_hold_s=corner_hold, **idle)
     rnd = Renderer(stadium, title=f"HaxBall RL: {args.red} vs {args.blue}")
     obs = env.observe()
     clock = pygame.time.Clock()

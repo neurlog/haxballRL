@@ -1,7 +1,7 @@
 """AlphaStar-style league for the main agent.
 
 * champion  - frozen copy of the best agent so far. The learner is promoted when it
-              beats the current champion >= 75% (checked every N games).
+              beats the current champion >= 70% (checked every N games).
 * members   - the hall of fame: every retired champion and a learner snapshot every N games.
 * PFSP      - opponents are drawn from the members the learner does worst against:
               with prob 1-explore from the `topk` hardest, weighted by (1 - winrate)^p;

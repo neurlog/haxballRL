@@ -10,8 +10,10 @@ Default mix: 40% self-play, 30% champion, 25% league, 5% lazy opponents (trainin
 statue / runaway / wander, see hax/lazy.py; never logged).
 
 The learner swaps colour every game. Every `promote_every` games the learner is promoted
-to champion if it beat the champion >= 75% over >= 60 games and averages >= 50% against
-the league's past champions and snapshots.
+to champion if it beat the champion >= 70% over >= 60 games and averages >= 50% against
+the league's past champions and snapshots. The games vs the champion are either the 'champ'
+training slots, or (with --promote-eval-games N) N separate evaluation games played at each
+check without learning, as the Orbit Wars winner did; then --frac-champ can be 0.
 
 Used by the per-mode folders, e.g. `1v1-classic/train.py`.
 """
@@ -44,14 +46,17 @@ def reward_weights(args, games):
     """Dense reward weights at this point in training: (speed, touch, ball_to_goal, team_spirit, stage, fade).
     * 0 -> reward_stage_games: everything moves linearly from its 'early' to its 'late' value;
     * push_fade_start -> + push_fade_games: touch and ball-to-goal fade linearly to zero (they reward pushing
-      the ball forward, not controlling it). Velocity-to-ball stays: it's what stops the passive collapse."""
+      the ball forward, not controlling it). With --fade-chase the velocity-to-ball reward fades with them, so
+      after the fade only goals, wins and the kickoff penalty are left (otherwise it stays, but it can then be
+      farmed: two agents glued to the ball collect ~+11 per game each, more than a win at +3)."""
     stage = min(1.0, games / args.reward_stage_games) if args.reward_stage_games > 0 else 1.0
     lerp = lambda a, b: a + (b - a) * stage  # noqa: E731
     fade = 1.0
     if args.push_fade_games > 0:
         fade = min(1.0, max(0.0, 1.0 - (games - args.push_fade_start) / args.push_fade_games))
-    return (lerp(args.speed_early, args.speed_late), lerp(args.touch_early, args.touch_late) * fade,
-            lerp(args.btg_early, args.btg_late) * fade, lerp(args.team_spirit_early, args.team_spirit_late), stage, fade)
+    return (lerp(args.speed_early, args.speed_late) * (fade if args.fade_chase else 1.0),
+            lerp(args.touch_early, args.touch_late) * fade,
+            lerp(args.btg_early, args.btg_late) * (1.0 if args.keep_btg else fade), lerp(args.team_spirit_early, args.team_spirit_late), stage, fade)
 
 
 def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
@@ -61,6 +66,8 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     a("--runs-dir", default="runs")
     a("--resume", action="store_true")
     a("--init-from", default=None, help="start from these weights (e.g. a 1v1 checkpoint for 3v3)")
+    a("--resume-weights", default=None, help="with --resume: keep the run's game count and league, but "
+      "replace the learner with these weights (e.g. an earlier champion) and reset the optimiser")
     a("--total-games", type=int, default=10**9)
     # game
     a("--team-size", type=int, default=1)
@@ -74,6 +81,8 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     # reward
     a("--goal-reward", type=float, default=1.0, help="+ for each goal scored, - for each conceded")
     a("--win-reward", type=float, default=3.0, help="+ for winning the game, - for losing it, 0 for a draw")
+    a("--win-on-lead", action="store_true", help="pay the win reward when the lead changes (sums to the same "
+      "+win/-win/0 per game, but isn't discounted away by the end of a long game)")
     # RLGym-style dense rewards, per decision (30/s), each term in [0,1] or [-1,1]. Weights move
     # linearly from the 'early' to the 'late' value over --reward-stage-games, like the RLGym
     # guide's stages: first learn to reach and touch the ball, then shift to moving it to goal.
@@ -88,11 +97,30 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     a("--push-fade-start", type=float, default=10000, help="games after which the touch and ball-to-goal rewards "
       "start fading to zero, so goals and wins decide everything")
     a("--push-fade-games", type=float, default=10000, help="games the fade takes (0 = no fade)")
+    a("--btg-zero-sum", action="store_true", help="ball-to-goal as (yours - the opponents') / 2, so it can't pay both")
+    a("--keep-btg", action="store_true", help="don't fade the ball-to-goal reward (it's zero-sum-ish, so it can't be farmed by both)")
+    a("--fade-chase", action="store_true", help="fade the velocity-to-ball reward to zero with touch and ball-to-goal")
     a("--kickoff-penalty", type=float, default=0.002, help="per decision while your own kickoff waits past the grace time")
     a("--kickoff-grace", type=float, default=5.0, help="seconds of free waiting at your own kickoff")
+    a("--corner-box", type=float, default=0.0, help="training-only: side (px) of the stall square in each corner; 0 = off")
+    a("--corner-hold", type=float, default=5.0, help="seconds of play the ball may sit in a corner square for free")
+    a("--corner-penalty", type=float, default=0.0, help="per decision, to EVERY player, while the ball overstays a corner square")
+    a("--idle-penalty", type=float, default=0.0, help="training-only: per decision, to the player NEAREST the ball, "
+      "while the ball has stayed within --idle-dist px for more than --idle-hold s of play; 0 = off")
+    a("--idle-dist", type=float, default=50.0, help="the ball has to travel this far (px) to count as moving")
+    a("--idle-hold", type=float, default=5.0, help="seconds of play the ball may sit still for free")
+    a("--idle-table", default="1,0,1,0,1,0", help="share of --idle-penalty by score and distance: "
+      "winning nearest,others, level nearest,others, losing nearest,others (6 numbers)")
+    a("--idle-start-games", type=float, default=0, help="the idle penalty is off until this many games "
+      "(idle time is still logged), then ramps up to full over --idle-ramp-games")
+    a("--idle-ramp-games", type=float, default=0)
+    a("--corner-start-games", type=float, default=0, help="the corner penalty is off until this many games "
+      "(corner time is still logged), then ramps up to full over --corner-ramp-games")
+    a("--corner-ramp-games", type=float, default=0)
     # team play (team games only; no effect in 1v1). See hax/env.py for the exploit guards.
     a("--pass-reward", type=float, default=0.0, help="zero-sum reward for a forward pass >= --pass-min-dist")
     a("--pass-min-dist", type=float, default=100.0)
+    a("--pass-backward", action="store_true", help="backward passes count too (default: forward or sideways only)")
     a("--crowd-penalty", type=float, default=0.0, help="per decision, per teammate closer than --crowd-dist")
     a("--crowd-dist", type=float, default=40.0, help="teammates closer than this (px) count as crowding")
     a("--team-spirit-early", type=float, default=0.0, help="blend of own vs team-average individual rewards")
@@ -124,7 +152,10 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     a("--frac-lazy", type=float, default=0.05, help="training-only lazy opponents (statue / runaway / wander), "
       "taken from the self-play share; never logged")
     a("--promote-every", type=int, default=500)
-    a("--promote-threshold", type=float, default=0.75)
+    a("--promote-eval-games", type=int, default=0, help="at each promotion check, play this many separate "
+      "evaluation games (no learning) vs the champion and promote on those; 0 = use the training games "
+      "vs the champion (--frac-champ) instead")
+    a("--promote-threshold", type=float, default=0.70)
     a("--promote-min-games", type=int, default=60)
     a("--promote-min-league", type=float, default=0.5)
     a("--snapshot-every-games", type=int, default=1000)
@@ -146,6 +177,58 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     return p
 
 
+def eval_vs(learner, opponent, env_kwargs, n_games, seed=0, dev="cpu", opp_dev="cpu"):
+    """Play `n_games` evaluation games (no learning) of `learner` vs `opponent`, the learner red
+    in half of them. Returns one result per game from the learner's side: 1 win, 0.5 draw, 0 loss."""
+    env = HaxEnv(n_games, seed=seed, **env_kwargs)
+    P, D, ts = env.P, env.obs_dim, env.ts
+    nm, no = env.n_mates, env.n_opps
+    red = np.arange(n_games) % 2 == 0
+    li = np.array([e * P + (0 if red[e] else ts) + k for e in range(n_games) for k in range(ts)])
+    oi = np.array([e * P + (ts if red[e] else 0) + k for e in range(n_games) for k in range(ts)])
+    obs = env.observe().reshape(n_games * P, D)
+    done, res = np.zeros(n_games, bool), [None] * n_games
+    while not done.all():
+        o = torch.from_numpy(obs)
+        acts = np.zeros(n_games * P, np.int64)
+        acts[li] = learner.act(o[li].to(dev), nm, no)[0].cpu().numpy()
+        acts[oi] = opponent.act(o[oi].to(opp_dev), nm, no)[0].cpu().numpy()
+        nobs, _, _, fin = env.step(acts.reshape(n_games, P))
+        obs = nobs.reshape(n_games * P, D)
+        for e, rg, bg, *_ in fin:
+            if not done[e]:  # (finished games restart; only the first one counts)
+                done[e] = True
+                mine, theirs = (rg, bg) if red[e] else (bg, rg)
+                res[e] = 1.0 if mine > theirs else (0.5 if mine == theirs else 0.0)
+    return res
+
+
+def idle_table(spec: str):
+    """'a,b,c,d,e,f' -> ((a, b), (c, d), (e, f)): winning / level / losing x (nearest, others)."""
+    v = [float(x) for x in str(spec).split(",")]
+    if len(v) != 6:
+        raise SystemExit(f"--idle-table needs 6 numbers, got {spec!r}")
+    return tuple(zip(v[0::2], v[1::2]))
+
+
+def ramp(games, start, length):
+    """0 before `start` games, then linearly up to 1 over `length` games."""
+    return min(1.0, max(0.0, (games - start) / max(length, 1.0)))
+
+
+def refresh_opponents(env_opp, league) -> bool:
+    """Re-pick the league opponent of every game whose member was just evicted (the league is
+    capped at --league-size; run v6 crashed at 49k games loading an evicted snapshot).
+    Returns True if anything changed."""
+    live = {m["id"] for m in league.members}
+    changed = False
+    for e, mid in enumerate(env_opp):
+        if mid is not None and mid not in live:
+            env_opp[e] = league.sample()
+            changed = True
+    return changed
+
+
 def fmean(xs):
     xs = list(xs)
     return float(np.mean(xs)) if xs else float("nan")
@@ -163,11 +246,17 @@ def main(argv=None, defaults=None, mode_dir="."):
     os.makedirs(run_dir, exist_ok=True)
 
     N, ts = args.n_envs, args.team_size
-    env = HaxEnv(N, team_size=ts, stadium=args.stadium, seed=args.seed, ping_ms=args.ping_ms,
-                 jitter_ms=args.jitter_ms, frame_skip=args.frame_skip, time_limit_s=args.time_limit,
-                 overtime_limit_s=args.overtime_limit, kickoff_timeout_s=args.kickoff_timeout,
-                 goal_reward=args.goal_reward, win_reward=args.win_reward,
-                 kickoff_penalty=args.kickoff_penalty, kickoff_grace_s=args.kickoff_grace)
+    # the game itself (rules, clock, ping); the evaluation games use the same settings
+    env_kwargs = dict(team_size=ts, stadium=args.stadium, ping_ms=args.ping_ms, jitter_ms=args.jitter_ms,
+                      frame_skip=args.frame_skip, time_limit_s=args.time_limit,
+                      overtime_limit_s=args.overtime_limit, kickoff_timeout_s=args.kickoff_timeout)
+    env = HaxEnv(N, seed=args.seed, **env_kwargs,
+                 goal_reward=args.goal_reward, win_reward=args.win_reward, win_on_lead=args.win_on_lead,
+                 btg_zero_sum=args.btg_zero_sum,
+                 kickoff_penalty=args.kickoff_penalty, kickoff_grace_s=args.kickoff_grace,
+                 corner_box=args.corner_box, corner_hold_s=args.corner_hold, corner_penalty=args.corner_penalty,
+                 idle_dist=args.idle_dist, idle_hold_s=args.idle_hold, idle_penalty=args.idle_penalty,
+                 idle_table=idle_table(args.idle_table))
     P, D = env.P, env.obs_dim
     nm, no = env.n_mates, env.n_opps
     mkw = dict(self_dim=SELF_DIM, ent_dim=ENT_DIM, n_actions=N_ACTIONS, hidden=args.hidden, ent_hidden=args.ent_hidden)
@@ -183,8 +272,9 @@ def main(argv=None, defaults=None, mode_dir="."):
     league = League(run_dir, ctor, topk=args.pfsp_topk, explore=args.pfsp_explore, power=args.pfsp_power,
                     max_size=args.league_size, device=opp_dev)
     snap = lambda: {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}  # noqa: E731
-    print(f"devices: learner {dev}, opponents {opp_dev}" + (f" ({torch.cuda.device_count()} GPUs: "
-          + ", ".join(torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())) + ")" if cuda else ""))
+    if cuda:
+        print(f"devices: learner {dev}, opponents {opp_dev} ({torch.cuda.device_count()} GPUs: "
+              + ", ".join(torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())) + ")")
 
     games, updates, rows = 0, 0, []
     champ_results = collections.deque(maxlen=200)
@@ -199,6 +289,11 @@ def main(argv=None, defaults=None, mode_dir="."):
             with open(os.path.join(run_dir, "log.csv")) as f:
                 rows = [{k: float(v) for k, v in r.items()} for r in csv.DictReader(f)]
         print(f"resumed {run_dir} at {games} games, champion gen {league.champion_gen}")
+        if args.resume_weights:
+            model.load_state_dict(load_policy(args.resume_weights).state_dict())
+            opt = torch.optim.Adam(model.parameters(), lr=args.lr, eps=1e-5)
+            champ_results.clear()
+            print(f"learner weights replaced by {args.resume_weights} (optimiser reset)")
     else:
         if args.init_from:
             src = load_policy(args.init_from)
@@ -209,8 +304,8 @@ def main(argv=None, defaults=None, mode_dir="."):
             # the teammate encoder only exists so a transferred 1v1 policy starts unchanged)
             model.mate_enc[2].reset_parameters()
         league.set_champion(snap(), 0, 0)
-        with open(os.path.join(run_dir, "config.json"), "w") as f:
-            json.dump(vars(args), f, indent=1)
+    with open(os.path.join(run_dir, "config.json"), "w") as f:  # the settings now in force (resumes too)
+        json.dump(vars(args), f, indent=1)
 
     # ---- env slot roles (fixed), learner colour flips every game
     n_champ = int(round(N * args.frac_champ))
@@ -263,9 +358,10 @@ def main(argv=None, defaults=None, mode_dir="."):
     groups = opponent_groups()
     L = len(learn_idx)
     T = args.rollout
-    print(f"{ts}v{ts} on {args.stadium}: {N} games in parallel ({n_self} self-play, {n_champ} vs champion, "
-          f"{n_league} vs league, {n_lazy} vs lazy opponents), {L} learner agents, ping {args.ping_ms:.0f}ms, "
-          f"{60 // args.frame_skip} decisions/s -> {run_dir}")
+    mix = ", ".join(f"{k} {lbl}" for k, lbl in ((n_self, "self-play"), (n_league, "vs league (PFSP)"),
+                                               (n_champ, "vs champion"), (n_lazy, "vs lazy")) if k)
+    print(f"{ts}v{ts} on {args.stadium}: {N} games in parallel ({mix})"
+          + (f", ping {args.ping_ms:.0f}ms" if args.ping_ms else "") + f" -> {run_dir}")
 
     b_obs = torch.zeros(T, L, D)
     b_act = torch.zeros(T, L, dtype=torch.long)
@@ -277,7 +373,8 @@ def main(argv=None, defaults=None, mode_dir="."):
     obs = env.reset().reshape(N * P, D)
     st = dict(champ=champ_results, league=collections.deque(maxlen=300),
               goals=collections.deque(maxlen=300), contact=collections.deque(maxlen=300), len=collections.deque(maxlen=300),
-              passes=collections.deque(maxlen=300))
+              passes=collections.deque(maxlen=300), corner=collections.deque(maxlen=300),
+              idle=collections.deque(maxlen=300))
     last_view = games // args.view_every
     last_promo = games // args.promote_every
     last_snap = games // args.snapshot_every_games
@@ -300,6 +397,8 @@ def main(argv=None, defaults=None, mode_dir="."):
         from .viewer import run_viewer
         payload = dict(team_size=ts, stadium=args.stadium, ping_ms=args.ping_ms, model_kwargs=mkw,
                        learner=snap(), champion=league.champion_state, rows=rows[-400:], seconds=args.view_seconds, skip_to_s=args.view_skip,
+                       corner_box=args.corner_box, corner_hold=args.corner_hold,
+                       idle=dict(idle_dist=args.idle_dist, idle_hold_s=args.idle_hold, idle_penalty=args.idle_penalty),
                        games=games, title=f"{ts}v{ts} {args.stadium} | {args.name} | {games} games")
         viewer_proc = mp.get_context("spawn").Process(target=run_viewer, args=(payload,), daemon=True)
         viewer_proc.start()
@@ -308,7 +407,10 @@ def main(argv=None, defaults=None, mode_dir="."):
         while games < args.total_games:
             w_speed, w_touch, w_btg, spirit, stage, fade = reward_weights(args, games)
             env.set_reward_weights(w_speed, w_touch, w_btg)
-            env.set_team_rewards(args.pass_reward, args.crowd_penalty, spirit, args.pass_min_dist, args.crowd_dist)
+            env.set_idle_scale(ramp(games, args.idle_start_games, args.idle_ramp_games))
+            env.set_corner_scale(ramp(games, args.corner_start_games, args.corner_ramp_games))
+            env.set_team_rewards(args.pass_reward, args.crowd_penalty, spirit, args.pass_min_dist, args.crowd_dist,
+                                 args.pass_backward)
             ent_coef = args.ent_coef + (args.ent_coef_final - args.ent_coef) * min(1.0, games / args.ent_anneal_games)
             for t in range(T):
                 o = torch.from_numpy(obs)
@@ -328,7 +430,7 @@ def main(argv=None, defaults=None, mode_dir="."):
                 b_rew[t] = rew.reshape(-1)[learn_idx]
                 b_done[t] = np.repeat(done, P)[learn_idx]
                 regroup = False
-                for (e, rg, bg, ticks, rc, bc, npass) in finished:
+                for (e, rg, bg, ticks, rc, bc, npass, cpen, ipen) in finished:
                     games += 1
                     mode = env_mode[e]
                     if mode == 0:
@@ -336,6 +438,8 @@ def main(argv=None, defaults=None, mode_dir="."):
                         st["contact"].append((rc + bc) / env.P / 60.0)
                         st["passes"].append(npass)
                         st["len"].append(ticks / 60.0)
+                        st["corner"].append(cpen / 60.0)
+                        st["idle"].append(ipen / 60.0)
                     elif mode == 3:  # lazy opponent: training only, nothing to record
                         lazy.reset_env(e)
                         learner_red[e] = not learner_red[e]
@@ -418,6 +522,16 @@ def main(argv=None, defaults=None, mode_dir="."):
             # ---- league bookkeeping
             if games // args.promote_every > last_promo:
                 last_promo = games // args.promote_every
+                if args.promote_eval_games > 0:
+                    te = time.time()
+                    res = eval_vs(model, league.champion_model(), env_kwargs, args.promote_eval_games,
+                                  seed=random.randrange(1 << 30), dev=dev, opp_dev=opp_dev)
+                    champ_results.clear()
+                    champ_results.extend(res)
+                    eval_note = (f"won {res.count(1.0)} drew {res.count(0.5)} lost {res.count(0.0)} of {len(res)}, "
+                                 f"{time.time() - te:.0f} s")
+                else:
+                    eval_note = f"over {len(champ_results)} training games"
                 wc = fmean(champ_results)
                 la = league.league_winrate()
                 ok_league = la is None or la >= args.promote_min_league
@@ -425,18 +539,20 @@ def main(argv=None, defaults=None, mode_dir="."):
                     old = league.champion_gen
                     league.promote(snap(), games)
                     champ_results.clear()
-                    print(f"*** PROMOTED at {games} games: learner is champion gen {league.champion_gen} "
-                          f"(won {wc:.0%} vs gen {old}, league avg {'n/a' if la is None else f'{la:.2f}'}) "
-                          f"| league now {len(league.members)} members")
+                    print(f"*** PROMOTED at {games} games: now champion gen {league.champion_gen} "
+                          f"(scored {wc:.0%} vs gen {old}: {eval_note})", flush=True)
                 else:
-                    print(f"--- promotion check at {games} games: {wc:.0%} vs champion gen {league.champion_gen} over "
-                          f"{len(champ_results)} games, league avg {'n/a' if la is None else f'{la:.2f}'} "
-                          f"| hardest: {league.summary()}")
+                    print(f"--- {games} games: {wc:.0%} vs champion gen {league.champion_gen} "
+                          f"(needs {args.promote_threshold:.0%}; {eval_note})"
+                          + ("" if ok_league else f", but league avg {la:.2f} is under {args.promote_min_league:.2f}"),
+                          flush=True)
                 league.save()
             if games // args.snapshot_every_games > last_snap:
                 last_snap = games // args.snapshot_every_games
                 league.add(snap(), "snapshot", games)
                 league.save()
+            if refresh_opponents(env_opp, league):  # a promotion or snapshot may have evicted a member
+                groups = opponent_groups()
             if games // args.ckpt_every_games > last_ckpt:
                 last_ckpt = games // args.ckpt_every_games
                 save(os.path.join(run_dir, f"ckpt_{games:07d}.pt"))
@@ -451,19 +567,31 @@ def main(argv=None, defaults=None, mode_dir="."):
                 row = dict(games=games, updates=updates, sps=sps, champion_gen=league.champion_gen,
                            win_champ=fmean(champ_results), win_league=fmean(st["league"]),
                            goals_per_game=fmean(st["goals"]), contact_s=fmean(st["contact"]), passes_per_game=fmean(st["passes"]),
-                           game_len_s=fmean(st["len"]), entropy=fmean(ent_hist[-args.log_every:]),
+                           game_len_s=fmean(st["len"]), corner_pen_s=fmean(st["corner"]),
+                           idle_pen_s=fmean(st["idle"]), entropy=fmean(ent_hist[-args.log_every:]),
                            value_loss=fmean(vl_hist[-args.log_every:]), approx_kl=fmean(kl_hist[-args.log_every:]),
                            reward_stage=stage, push_reward_fade=fade, minutes=(now - t0) / 60)
                 rows.append(row)
-                new = not os.path.exists(log_path)
-                with open(log_path, "a", newline="") as f:
-                    w = csv.DictWriter(f, fieldnames=list(row))
-                    if new:
+                header = None
+                if os.path.exists(log_path):
+                    with open(log_path, newline="") as f:
+                        header = next(csv.reader(f), None)
+                if header != list(row):
+                    # new file, or a resumed run from before a column was added: rewrite it with
+                    # the current columns (missing old values become 0) so the CSV stays aligned
+                    with open(log_path, "w", newline="") as f:
+                        w = csv.DictWriter(f, fieldnames=list(row), restval=0.0, extrasaction="ignore")
                         w.writeheader()
-                    w.writerow(row)
-                print(f"games {games:7d} | upd {updates:6d} | {sps / 1000:5.1f}k sps | gen {league.champion_gen:3d} | "
-                      f"win champ {row['win_champ']:.2f} league {row['win_league']:.2f} | "
+                        w.writerows(rows)
+                else:
+                    with open(log_path, "a", newline="") as f:
+                        csv.DictWriter(f, fieldnames=list(row)).writerow(row)
+                print(f"games {games:7d} | {sps / 1000:5.1f}k sps | gen {league.champion_gen:3d} | "
+                      + (f"win vs champ {row['win_champ']:.2f} | " if args.frac_champ else "")
+                      + f"league {row['win_league']:.2f} | "
                       f"goals/g {row['goals_per_game']:5.2f} contact {row['contact_s']:5.1f}s/g"
+                      + (f" corner {row['corner_pen_s']:4.1f}s/g" if args.corner_box else "")
+                      + (f" idle {row['idle_pen_s']:4.1f}s/g" if args.idle_penalty else "")
                       + (f" passes/g {row['passes_per_game']:4.1f}" if args.pass_reward else "") + " | "
                       f"ent {row['entropy']:.2f} vl {row['value_loss']:.4f} kl {row['approx_kl']:.4f}", flush=True)
 

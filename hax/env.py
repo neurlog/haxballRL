@@ -19,7 +19,11 @@ HaxballGym (`haxball_core`) gives us the real engine: physics, kickoff barriers,
   scaled by the stadium's size (`stadium_scales`).
 * **Rewards** (RLGym-style: every term is in [-1, 1] and its weight sets its influence):
   * events: +/-`goal_reward` per goal scored/conceded, +/-`win_reward` to every player of
-    the winning/losing team when the game ends (0 for a draw);
+    the winning/losing team when the game ends (0 for a draw). With `win_on_lead` the win
+    reward is paid when the lead changes instead: +win_reward when your team goes ahead,
+    -win_reward when it loses the lead (and the same from level). It adds up to exactly the
+    end-of-game reward (+win/-win/0) but arrives when the deciding goal happens, so it isn't
+    discounted away over a 3-minute game (gamma 0.995 is a ~7 s horizon);
   * dense, per decision, weights set by `set_reward_weights(speed, touch, ball_to_goal)`:
     - velocity towards the ball, signed (HaxballGym/RLGym VelocityPlayerToBall): moving away
       costs what moving closer earns, so stepping back and forth next to the ball earns ~0,
@@ -29,18 +33,34 @@ HaxballGym (`haxball_core`) gives us the real engine: physics, kickoff barriers,
       Kicking the ball into a wall and having it bounce back sums to about zero, so
       pinning the ball in a corner and spamming kick earns nothing
       (tests/test_rewards.py checks this),
-    - ball velocity towards the goal you attack (VelocityBallToGoalReward).
+    - ball velocity towards the goal you attack (VelocityBallToGoalReward). With `btg_zero_sum`
+      it's (yours - the opponents') / 2, so whatever one team gains the other loses.
     The velocity-to-ball term goes only to the player on each team nearest the ball
     (identical to before in 1v1), so in team games they don't all chase it in a swarm.
   * kickoff dawdling: once your own kickoff has waited `kickoff_grace_s` (5 s), the kicking
     team loses `kickoff_penalty` per decision until the ball moves (the clock is stopped
     during kickoffs, so without this waiting is free and agents learn to stall),
+  * corner stalling (training-only, off by default): a `corner_box` x `corner_box` px square sits in
+    each corner of the pitch. Once the ball has stayed inside one for `corner_hold_s` of play,
+    EVERY player loses `corner_penalty` per decision until it leaves. Both sides pay the same, so
+    pinning the ball in a corner is never safe, and it can only cost reward (nothing to farm).
+    The squares are drawn see-through red in the viewers only; agents don't observe them,
+  * idle ball (training-only, off by default): if the ball stays within `idle_dist` px of where it
+    was for more than `idle_hold_s` of play, the player NEAREST the ball loses `idle_penalty` per
+    decision until the ball moves `idle_dist` px. Run v6 learned to park both bots in their own
+    goal mouths and leave the ball alone (98% 0-0). The nearest player is the one who can most
+    easily move it, so this pushes play on without punishing the bot that is defending; tapping
+    the ball in place doesn't reset it (it has to travel), dribbling and passing do. Inside a
+    corner square any touch resets it too: corner play is left to the corner rule above.
+    `idle_table` scales it by your team's score and whether you're the nearest player:
+    rows winning / level / losing, columns (nearest, everyone else); the default (1, 0) on every
+    row is "nearest player pays in full, nobody else",
   * team play (all off by default, used for 3v3), set by `set_team_rewards`:
     - pass: a teammate's touch followed by another teammate's touch, no opponent touch in
       between. Paid only if the ball travelled >= `pass_min_dist` (scaled up to 1 at 300 px)
-      AND ended closer to the opponent goal than the passer's last touch. Zero-sum (the
-      opponents lose it), with a 1 s cooldown per team. Corner ping-pong (short) and
-      endless back-and-forth (one direction is always backwards) earn nothing,
+      AND ended closer to the opponent goal than the passer's last touch (any direction with
+      `pass_backward`). Zero-sum (the opponents lose it), with a 1 s cooldown per team. Corner
+      ping-pong (short) earns nothing, and forward-only, neither does endless back-and-forth,
     - crowding: each pair of teammates closer than `crowd_dist` costs both
       `crowd_penalty` x (1 - d / crowd_dist) per decision,
     - team spirit (RLGym): individual dense terms (velocity to ball, touch, crowding) are
@@ -80,6 +100,15 @@ SELF_DIM = 27
 ENT_DIM = 8
 
 
+def field_size(stadium: str):
+    """Half-width and half-height of the pitch lines (the 'bg' rectangle), e.g. 370 x 170 on Classic."""
+    import json
+
+    from haxballgym import stadium_text
+    bg = json.loads(stadium_text(stadium)).get("bg", {})
+    return float(bg.get("width", 370)), float(bg.get("height", 170))
+
+
 def action_to_keys(a: np.ndarray) -> np.ndarray:
     """(...,) joint action -> (..., 3) engine keys (dx, dy, kick) in the agent's own frame."""
     a = np.asarray(a, np.int64)
@@ -110,8 +139,17 @@ class HaxEnv:
         kickoff_timeout_s: float = 10.0,
         goal_reward: float = 1.0,
         win_reward: float = 3.0,
+        win_on_lead: bool = False,
+        btg_zero_sum: bool = False,
         kickoff_penalty: float = 0.0,
         kickoff_grace_s: float = 5.0,
+        corner_box: float = 0.0,
+        corner_hold_s: float = 5.0,
+        corner_penalty: float = 0.0,
+        idle_dist: float = 50.0,
+        idle_hold_s: float = 5.0,
+        idle_penalty: float = 0.0,
+        idle_table=((1.0, 0.0), (1.0, 0.0), (1.0, 0.0)),
     ):
         self.n, self.ts = n_envs, team_size
         self.P = 2 * team_size
@@ -131,11 +169,26 @@ class HaxEnv:
         self.ko_timeout = int(kickoff_timeout_s * TICKS_PER_S) if kickoff_timeout_s > 0 else 1 << 62
         self.goal_reward = goal_reward
         self.win_reward = win_reward
+        self.win_on_lead = win_on_lead
+        self.btg_zero_sum = btg_zero_sum
         self.ko_penalty = kickoff_penalty / frame_skip  # per tick, so `kickoff_penalty` per decision
         self.ko_grace = int(kickoff_grace_s * TICKS_PER_S)
+        self.corner_box = corner_box
+        self.corner_hold = int(corner_hold_s * TICKS_PER_S)
+        self.corner_pen = corner_penalty / frame_skip  # per tick, so `corner_penalty` per decision
+        self.corner_scale = 1.0  # set_stall_scales: 0 keeps measuring corner time but charges nothing
+        self.field_w, self.field_h = field_size(stadium)
+        self.idle_dist = idle_dist
+        self.idle_hold = int(idle_hold_s * TICKS_PER_S)
+        self.idle_pen = idle_penalty / frame_skip  # per tick, so `idle_penalty` per decision
+        self.idle_scale = 1.0  # set_idle_scale: 0 keeps measuring idle time but charges nothing
+        # share of idle_penalty by your team's score state and whether you're the nearest player:
+        # rows winning / level / losing, columns (nearest, everyone else)
+        self.idle_table = np.asarray(idle_table, np.float64).reshape(3, 2)
         self.w_speed = self.w_touch = self.w_btg = 0.0
         self.w_pass = self.w_crowd = self.team_spirit = 0.0
         self.pass_min_dist, self.crowd_dist = 100.0, 40.0
+        self.pass_backward = False
 
         self.team = self.engine._teams.copy()  # (N, P)
         self.sx = np.where(self.team == RED, 1.0, -1.0)  # x-mirror per agent
@@ -180,6 +233,11 @@ class HaxEnv:
         self.last_touch_pos = np.zeros((n, 2))
         self.pass_cool = np.zeros((n, 2), np.int64)  # per team (red, blue), ticks
         self.passes = np.zeros((n, 2), np.int64)  # rewarded passes this game, per team
+        self.corner_ticks = np.zeros(n, np.int64)  # ticks of play the ball has been in a corner box
+        self.corner_pen_ticks = np.zeros(n, np.int64)  # ticks of corner penalty this game
+        self.idle_anchor = np.zeros((n, 2))  # where the ball was when it last travelled idle_dist
+        self.idle_ticks = np.zeros(n, np.int64)  # ticks of play since then
+        self.idle_pen_ticks = np.zeros(n, np.int64)  # ticks of idle penalty this game
         self.slot = 0
         self.state = self.engine.snapshot()
         return self.observe()
@@ -200,20 +258,35 @@ class HaxEnv:
         self.last_toucher[mask] = -1
         self.pass_cool[mask] = 0
         self.passes[mask] = 0
+        self.corner_ticks[mask] = 0
+        self.corner_pen_ticks[mask] = 0
+        self.idle_anchor[mask] = 0.0
+        self.idle_ticks[mask] = 0
+        self.idle_pen_ticks[mask] = 0
+
+    def set_idle_scale(self, scale: float):
+        """Fraction (0..1) of `idle_penalty` actually charged; training switches it on after a while."""
+        self.idle_scale = float(scale)
+
+    def set_corner_scale(self, scale: float):
+        """Fraction (0..1) of `corner_penalty` actually charged; training switches it on after a while."""
+        self.corner_scale = float(scale)
 
     def set_reward_weights(self, speed: float = 0.0, touch: float = 0.0, ball_to_goal: float = 0.0):
         self.w_speed, self.w_touch, self.w_btg = speed, touch, ball_to_goal
 
     def set_team_rewards(self, pass_reward: float = 0.0, crowd_penalty: float = 0.0, team_spirit: float = 0.0,
-                         pass_min_dist: float = 100.0, crowd_dist: float = 40.0):
+                         pass_min_dist: float = 100.0, crowd_dist: float = 40.0, pass_backward: bool = False):
         self.w_pass, self.w_crowd, self.team_spirit = pass_reward, crowd_penalty, team_spirit
         self.pass_min_dist, self.crowd_dist = pass_min_dist, crowd_dist
+        self.pass_backward = pass_backward
 
     # ------------------------------------------------------------------ step
     def step(self, actions: np.ndarray):
         """actions (N, P) joint actions in each agent's mirrored frame.
         Returns obs (N,P,D), rewards (N,P), done (N,), finished games
-        [(env, red_goals, blue_goals, total_ticks, red_touches, blue_touches, rewarded_passes)]."""
+        [(env, red_goals, blue_goals, total_ticks, red_touches, blue_touches, rewarded_passes,
+          corner_penalty_ticks, idle_penalty_ticks)]."""
         n, P = self.n, self.P
         actions = np.asarray(actions, np.int64).reshape(n, P)
         keys = action_to_keys(actions)
@@ -271,17 +344,49 @@ class HaxEnv:
                                     ).astype(np.float32)
             running = (self.celeb == 0) & ~waiting
             self.play_ticks += running & ~done
+            if self.corner_box > 0:
+                b = np.abs(st.ball_pos)
+                inside = (b[:, 0] > self.field_w - self.corner_box) & (b[:, 1] > self.field_h - self.corner_box)
+                self.corner_ticks = np.where(inside & (self.celeb == 0), self.corner_ticks + running, 0)
+                hot = (self.corner_ticks > self.corner_hold) & running & ~done
+                self.corner_pen_ticks += hot
+                if self.corner_pen and self.corner_scale > 0 and hot.any():
+                    rew -= np.where(hot[:, None], self.corner_pen * self.corner_scale, 0.0).astype(np.float32)
+            if self.idle_pen:
+                moved = (np.linalg.norm(st.ball_pos - self.idle_anchor, axis=-1) > self.idle_dist) | (self.celeb > 0)
+                if self.corner_box > 0:  # a touch inside a corner square counts as moving the ball
+                    b = np.abs(st.ball_pos)
+                    in_box = (b[:, 0] > self.field_w - self.corner_box) & (b[:, 1] > self.field_h - self.corner_box)
+                    touched = np.linalg.norm(st.ball_pos[:, None] - st.player_pos, axis=-1).min(-1) < 26.5
+                    moved |= in_box & touched
+                self.idle_anchor[moved] = st.ball_pos[moved]
+                self.idle_ticks = np.where(moved, 0, self.idle_ticks + running)
+                idle = (self.idle_ticks > self.idle_hold) & running & ~done
+                self.idle_pen_ticks += idle
+                if idle.any() and self.idle_scale > 0:
+                    near = np.linalg.norm(st.ball_pos[:, None] - st.player_pos, axis=-1).argmin(-1)
+                    is_near = np.zeros((n, P), np.int64)
+                    is_near[np.arange(n), near] = 1
+                    lead = (self.score[:, 0] - self.score[:, 1])[:, None] * np.where(self.team == RED, 1, -1)
+                    row = np.where(lead > 0, 0, np.where(lead == 0, 1, 2))  # winning / level / losing
+                    share = self.idle_table[row, 1 - is_near]
+                    rew -= np.where(idle[:, None], self.idle_pen * self.idle_scale * share, 0.0).astype(np.float32)
             self.celeb = np.maximum(self.celeb - 1, 0)
             g = scored >= 0
             if g.any():
                 conc = scored.astype(np.int64)
                 red_scored = g & (conc == BLUE)
                 blue_scored = g & (conc == RED)
+                gi = np.where(g & ~done)[0]
+                lead0 = np.sign(self.score[gi, 0] - self.score[gi, 1])
                 self.score[:, 0] += red_scored & ~done
                 self.score[:, 1] += blue_scored & ~done
-                gi = np.where(g & ~done)[0]
                 sign = np.where(self.team[gi] == np.where(red_scored[gi], RED, BLUE)[:, None], 1.0, -1.0)
                 rew[gi] += self.goal_reward * sign
+                if self.win_on_lead:  # red's lead went from lead0 to lead1; blue gets the opposite
+                    dlead = np.sign(self.score[gi, 0] - self.score[gi, 1]) - lead0
+                    side = np.where(self.team[gi] == RED, 1.0, -1.0)
+                    rew[gi] += (self.win_reward * dlead[:, None] * side).astype(np.float32)
                 self.celeb[g] = 150
                 self.kicking[g] = conc[g]
                 self.last_toucher[g] = -1
@@ -332,12 +437,14 @@ class HaxEnv:
             # end-of-game reward: win > loss, on top of the per-goal rewards
             margin = np.sign(self.score[idx, 0] - self.score[idx, 1])  # +1 red won, -1 blue won, 0 draw
             side = np.where(self.team[idx] == RED, 1.0, -1.0)
-            rew[idx] += (self.win_reward * margin[:, None] * side).astype(np.float32)
+            if not self.win_on_lead:  # (with win_on_lead it was already paid as the lead changed)
+                rew[idx] += (self.win_reward * margin[:, None] * side).astype(np.float32)
             tch = self.touches[idx]
             for j, e in enumerate(idx):
                 finished.append((int(e), int(self.score[e, 0]), int(self.score[e, 1]), int(self.total_ticks[e]),
                                  int(tch[j][self.team[e] == RED].sum()), int(tch[j][self.team[e] == BLUE].sum()),
-                                 int(self.passes[e].sum())))
+                                 int(self.passes[e].sum()), int(self.corner_pen_ticks[e]),
+                                 int(self.idle_pen_ticks[e])))
             self._reset_envs(done)
             self.state = self.engine.snapshot()
         return self.observe(), rew, done, finished
@@ -356,6 +463,11 @@ class HaxEnv:
         dt = d.reshape(-1, 2, self.ts)  # red players first, then blue
         nearest = (dt == dt.min(-1, keepdims=True)).reshape(d.shape)
         btg = np.clip((self._goal_dir(st.ball_pos) * st.ball_vel[:, None]).sum(-1) / BALL_SPEED_REF, -1.0, 1.0)
+        if self.btg_zero_sum:
+            # (yours - the other team's) / 2: in a corner both goal mouths lie partly towards the
+            # middle, so the ball leaving a corner would otherwise pay BOTH teams (farmed in run v4)
+            bt = btg.reshape(-1, 2, self.ts)  # every player of a team attacks the same goal
+            btg = ((bt - bt[:, ::-1]) / 2).reshape(btg.shape)
         return (np.where(live & nearest, self.w_speed * speed, 0.0),
                 np.where(live, self.w_btg * btg, 0.0).astype(np.float32))
 
@@ -382,7 +494,7 @@ class HaxEnv:
                 delta = st.ball_pos[e] - self.last_touch_pos[e]
                 length = float(np.hypot(*delta))
                 forward = delta[0] * (1.0 if team_j == 0 else -1.0)
-                if length >= self.pass_min_dist and forward >= 0.0:
+                if length >= self.pass_min_dist and (forward >= 0.0 or self.pass_backward):
                     r = self.w_pass * min(length / 300.0, 1.0)
                     out[e] = np.where(self.team[e] == self.team[e, j], r, -r)
                     self.pass_cool[e, team_j] = TICKS_PER_S
@@ -458,4 +570,6 @@ class HaxEnv:
             ball=st.ball_pos[e].tolist(), players=st.player_pos[e].tolist(), teams=self.team[e].tolist(),
             kicking=(self.applied[e, :, 2] > 0).tolist(), score=self.score[e].tolist(),
             time_s=self.play_ticks[e] / TICKS_PER_S, overtime=bool(self.play_ticks[e] >= self.time_limit),
+            corner_box=self.corner_box, corner_hot=bool(self.corner_ticks[e] > self.corner_hold),
+            idle_hot=bool(self.idle_pen and self.idle_ticks[e] > self.idle_hold),
         )
