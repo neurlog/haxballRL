@@ -27,7 +27,7 @@ python 3v3-big/play.py --red human --blue 3v3-big/models/champion_5k.pt
 ```bash
 python 3v3-big/train.py --total-games 10000                       # from scratch
 python 3v3-big/train.py --total-games 10000 \
-    --init-from 1v1-classic/models/main-75kv9.pt                    # start from the 1v1 champion
+    --init-from 1v1-classic/models/main-200kv9.pt                    # start from the 1v1 champion
 python 3v3-big/train.py --resume --total-games 20000              # continue a run
 ```
 

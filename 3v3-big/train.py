@@ -1,7 +1,7 @@
 """Train the 3v3 team on the Big stadium. Runs are saved under 3v3-big/runs/<name>.
 
     python 3v3-big/train.py                                     # from scratch, run "main"
-    python 3v3-big/train.py --init-from 1v1-classic/models/main-75kv9.pt   # start from the 1v1 champion
+    python 3v3-big/train.py --init-from 1v1-classic/models/main-200kv9.pt   # start from the 1v1 champion
     python 3v3-big/train.py --resume                            # continue
 
 All flags: python 3v3-big/train.py --help
